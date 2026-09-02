@@ -134,6 +134,7 @@ class LWDETR(nn.Module):
         grouppose_keypoint_dim_downscale: int = 1,
         hbs_enabled: bool = False,
         hbs_reduction: int = 4,
+        hbs_initial_alpha: float = 0.25,
         hbs_kernel_sizes: list[int] | None = None,
     ):
         """Initializes the model.
@@ -147,6 +148,9 @@ class LWDETR(nn.Module):
             aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
             group_detr: Number of groups to speed detr training. Default is 1.
             lite_refpoint_refine: TODO
+            hbs_enabled: Whether to smooth projected features with adaptive HBS.
+            hbs_reduction: Bottleneck reduction for the HBS denoisers and gates.
+            hbs_initial_alpha: Initial value of each learnable per-image gate.
         """
         super().__init__()
         self.num_queries = num_queries
@@ -168,6 +172,7 @@ class LWDETR(nn.Module):
                 channels=hidden_dim,
                 kernel_sizes=hbs_kernel_sizes or [3],
                 reduction=hbs_reduction,
+                initial_alpha=hbs_initial_alpha,
             )
             if hbs_enabled
             else None
@@ -476,35 +481,22 @@ class LWDETR(nn.Module):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
         features, poss, cross_attn_features = self.backbone(samples)
-
-        out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
-        if self.training and self.hbs is not None and targets is not None:
-            hbs_tensors = self.hbs(
-                [feature.tensors for feature in features],
-                targets,
-                [feature.mask for feature in features],
-            )
-            hbs_features = [
-                NestedTensor(hbs_tensor, feature.mask) for hbs_tensor, feature in zip(hbs_tensors, features)
-            ]
-            hbs_cross_attn_features = None
+        if self.hbs is not None:
+            features = self._apply_hbs(features)
             if cross_attn_features is not None:
-                hbs_cross_attn_tensors = self.hbs(
-                    [feature.tensors for feature in cross_attn_features],
-                    targets,
-                    [feature.mask for feature in cross_attn_features],
-                )
-                hbs_cross_attn_features = [
-                    NestedTensor(hbs_tensor, feature.mask)
-                    for hbs_tensor, feature in zip(hbs_cross_attn_tensors, cross_attn_features)
-                ]
-            out["hbs_outputs"] = self._forward_from_backbone_features(
-                samples,
-                hbs_features,
-                poss,
-                hbs_cross_attn_features,
-            )
-        return out
+                cross_attn_features = self._apply_hbs(cross_attn_features)
+
+        return self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
+
+    def _apply_hbs(self, features: list[NestedTensor]) -> list[NestedTensor]:
+        """Insert adaptive HBS between the projector and Transformer Decoder."""
+        assert self.hbs is not None
+        tensors = self.hbs(
+            [feature.tensors for feature in features],
+            [feature.mask for feature in features],
+        )
+        assert isinstance(tensors, list)
+        return [NestedTensor(tensor, feature.mask) for tensor, feature in zip(tensors, features)]
 
     def _forward_from_backbone_features(
         self,
@@ -513,7 +505,7 @@ class LWDETR(nn.Module):
         poss: list[torch.Tensor],
         cross_attn_features: list[NestedTensor] | None,
     ) -> dict[str, torch.Tensor]:
-        """Run the shared DETR head on normal or HBS-smoothed backbone features.
+        """Run the shared DETR head on projected (optionally HBS-smoothed) features.
 
         Args:
             samples: Input batch and padding mask.
@@ -889,6 +881,7 @@ def build_model(args: "BuilderArgs"):
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
         hbs_enabled=getattr(args, "hbs_enabled", False),
         hbs_reduction=getattr(args, "hbs_reduction", 4),
+        hbs_initial_alpha=getattr(args, "hbs_initial_alpha", 0.25),
         hbs_kernel_sizes=[
             (int(math.log2({"P3": 8, "P4": 16, "P5": 32, "P6": 64}[level])) // 2 * 2) + 1
             for level in args.projector_scale
@@ -920,10 +913,6 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
         if args.two_stage:
             aux_weight_dict.update({k + "_enc": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
-
-    if getattr(args, "hbs_enabled", False):
-        hbs_loss_coef = getattr(args, "hbs_loss_coef", 0.25)
-        weight_dict.update({f"{key}_hbs": value * hbs_loss_coef for key, value in tuple(weight_dict.items())})
 
     losses = ["labels", "boxes", "cardinality"]
     if args.segmentation_head:

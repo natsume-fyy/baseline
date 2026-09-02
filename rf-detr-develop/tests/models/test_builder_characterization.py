@@ -218,20 +218,12 @@ class TestBuildCriterionCharacterization:
         assert criterion.weight_dict["loss_bbox"] == ns.bbox_loss_coef
         assert criterion.weight_dict["loss_giou"] == ns.giou_loss_coef
 
-    def test_hbs_weight_dict_uses_configured_coefficient(self) -> None:
-        """Every HBS loss mirrors its normal-branch weight with the HBS coefficient."""
+    def test_adaptive_hbs_does_not_create_a_duplicate_loss_branch(self) -> None:
+        """Adaptive HBS feeds the main decoder and therefore needs no duplicate losses."""
         mc = RFDETRBaseConfig(num_classes=80, pretrain_weights=None, device="cpu", hbs_enabled=True)
-        tc = TrainConfig(dataset_dir="/tmp", hbs_loss_coef=0.4)
+        criterion, _ = build_criterion_and_postprocessors(_make_ns(mc=mc))
 
-        criterion, _ = build_criterion_and_postprocessors(_make_ns(mc=mc, tc=tc))
-
-        assert criterion.weight_dict["loss_ce_hbs"] == pytest.approx(criterion.weight_dict["loss_ce"] * 0.4)
-        assert criterion.weight_dict["loss_bbox_0_hbs"] == pytest.approx(
-            criterion.weight_dict["loss_bbox_0"] * 0.4
-        )
-        assert criterion.weight_dict["loss_giou_enc_hbs"] == pytest.approx(
-            criterion.weight_dict["loss_giou_enc"] * 0.4
-        )
+        assert not any(key.endswith("_hbs") for key in criterion.weight_dict)
 
     def test_segmentation_weight_dict_contains_mask_losses(self) -> None:
         mc = RFDETRSegNanoConfig(pretrain_weights=None, device="cpu")

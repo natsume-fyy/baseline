@@ -478,6 +478,9 @@ class ModelConfig(BaseConfig):
         device: Target device string (e.g. ``"cuda"``, ``"cpu"``). Auto-detected if not set.
         gradient_checkpointing: Trade compute for memory by checkpointing activations. Defaults
             to ``False``.
+        hbs_enabled: Enable fog-adaptive smoothing between the multi-scale projector and Decoder.
+        hbs_reduction: Bottleneck reduction used by the HBS denoisers and gate MLPs.
+        hbs_initial_alpha: Initial residual smoothing strength before the gates adapt through training.
     """
 
     encoder: EncoderName
@@ -520,6 +523,7 @@ class ModelConfig(BaseConfig):
     dual_projector_kp_only: bool = False
     hbs_enabled: bool = False
     hbs_reduction: int = Field(default=4, ge=1)
+    hbs_initial_alpha: float = Field(default=0.25, gt=0.0, lt=1.0)
     num_keypoints_per_class: list[int] = Field(default_factory=list)
     num_decoder_registers: int = 0
     mask_downsample_ratio: int = 4
@@ -536,18 +540,6 @@ class ModelConfig(BaseConfig):
         ),
     )
     
-    @model_validator(mode="after")
-    def _validate_hbs_task(self) -> "ModelConfig":
-        """Restrict the current HBS integration to bounding-box detection.
-
-        HBS is implemented as an auxiliary detection branch. Segmentation and keypoint losses require additional
-        task-specific masking semantics and are intentionally rejected instead of silently applying an unvalidated
-        training objective.
-        """
-        if self.hbs_enabled and (self.segmentation_head or self.use_grouppose_keypoints):
-            raise ValueError("HBS currently supports detection models only.")
-        return self
-
     @model_validator(mode="after")
     def _sync_pe_with_resolution(self) -> "ModelConfig":
         """Auto-update positional_encoding_size when resolution is explicitly provided.
@@ -1056,7 +1048,6 @@ class TrainConfig(BaseConfig):
     lr_component_decay: float = 0.7
     drop_path: float = 0.0
     cls_loss_coef: float = 1.0
-    hbs_loss_coef: float = Field(default=0.25, ge=0.0)
     # Detection-vs-keypoint distinction is derived by callers via `include_keypoints`, not
     # stored on this field. See rfdetr.datasets.transforms.AlbumentationsWrapper.from_config
     # for the None/[]/[...] tri-state contract applied at the augmentation-pipeline boundary.

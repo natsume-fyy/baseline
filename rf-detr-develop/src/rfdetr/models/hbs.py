@@ -3,26 +3,19 @@
 # Copyright (c) 2025 Roboflow. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
-"""Training-only HBS background smoothing modules.
-
-The implementation adapts the HBS branch from SET's FCOS integration to RF-DETR's normalized ``cxcywh`` targets and
-multi-scale projected backbone features. HBS never runs in evaluation/export mode, so it adds no inference latency.
-"""
+"""Fog-adaptive background smoothing for projected multi-scale features."""
 
 from __future__ import annotations
 
+import math
+
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
 class BackgroundSmoothingBlock(nn.Module):
-    """Residual convolutional denoiser used to smooth background features.
-
-    Args:
-        channels: Number of input and output feature channels.
-        reduction: Bottleneck channel reduction factor.
-        kernel_size: Odd spatial convolution kernel size.
-    """
+    """Learn a residual, spatially smoothed version of one feature level."""
 
     def __init__(self, channels: int, reduction: int = 4, kernel_size: int = 3) -> None:
         super().__init__()
@@ -40,36 +33,94 @@ class BackgroundSmoothingBlock(nn.Module):
         bottleneck_channels = channels // reduction
         self.conv_block = nn.Sequential(
             nn.Conv2d(channels, bottleneck_channels, kernel_size, stride=1, padding=padding, bias=True),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Conv2d(bottleneck_channels, channels, kernel_size, stride=1, padding=padding, bias=True),
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        """Return the residual-smoothed feature map.
-
-        Args:
-            features: Feature tensor with shape ``(B, C, H, W)``.
-
-        Returns:
-            Tensor with the same shape as ``features``.
-        """
+        """Return ``F_HBS`` with the same shape as ``features``."""
         return features + self.conv_block(features)
 
 
-class HBS(nn.Module):
-    """Apply scale-adaptive smoothing only outside ground-truth boxes.
+class FogFrequencyGate(nn.Module):
+    """Predict a per-image gate from feature statistics and frequency energy.
 
-    RF-DETR targets store boxes as normalized ``(cx, cy, width, height)`` coordinates. A foreground mask is rasterized
-    independently at each feature level, which is equivalent to SET's full-resolution mask followed by nearest-neighbor
-    resizing while avoiding a large intermediate image-sized mask.
-
-    Args:
-        channels: Channel count shared by projected feature levels.
-        kernel_sizes: One odd denoising kernel size per feature level.
-        reduction: Bottleneck channel reduction factor.
+    The descriptor contains channel-wise mean/contrast plus two explicit scene
+    statistics: normalized global contrast (a haze cue) and high-frequency
+    residual energy. The small MLP learns how these cues should control HBS.
     """
 
-    def __init__(self, channels: int, kernel_sizes: list[int], reduction: int = 4) -> None:
+    def __init__(self, channels: int, reduction: int = 4, initial_alpha: float = 0.25) -> None:
+        super().__init__()
+        if not 0.0 < initial_alpha < 1.0:
+            raise ValueError(f"initial_alpha must be in (0, 1), got {initial_alpha}.")
+        hidden_channels = max(channels // reduction, 4)
+        self.predictor = nn.Sequential(
+            nn.Linear(2 * channels + 2, hidden_channels),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_channels, 1),
+        )
+
+        # Begin conservatively, then learn the dependence on haze/frequency cues.
+        final_layer = self.predictor[-1]
+        nn.init.zeros_(final_layer.weight)
+        nn.init.constant_(final_layer.bias, math.log(initial_alpha / (1.0 - initial_alpha)))
+
+    def forward(self, features: torch.Tensor, padding_mask: torch.Tensor | None = None) -> torch.Tensor:
+        """Return ``alpha`` shaped ``(B, 1, 1, 1)`` in [0, 1]."""
+        # Accumulate global statistics in fp32 to avoid overflow under AMP on
+        # high-resolution feature maps.
+        stats_features = features.float() if features.dtype in {torch.float16, torch.bfloat16} else features
+        if padding_mask is None:
+            valid = torch.ones_like(stats_features[:, :1])
+        else:
+            valid = (~padding_mask).unsqueeze(1).to(dtype=stats_features.dtype)
+
+        spatial_count = valid.sum(dim=(-2, -1)).clamp_min(1.0)
+        channel_mean = (stats_features * valid).sum(dim=(-2, -1)) / spatial_count
+        centered = (stats_features - channel_mean[:, :, None, None]) * valid
+        channel_std = torch.sqrt(centered.square().sum(dim=(-2, -1)) / spatial_count + 1e-6)
+
+        # Local low-pass residual: a differentiable measure of high-frequency energy.
+        pooled_valid = F.avg_pool2d(valid, kernel_size=3, stride=1, padding=1)
+        low_frequency = F.avg_pool2d(
+            stats_features * valid, kernel_size=3, stride=1, padding=1
+        ) / pooled_valid.clamp_min(1e-6)
+        high_frequency = (stats_features - low_frequency).abs() * valid
+        magnitude = (stats_features.abs() * valid).sum(dim=(1, 2, 3)).clamp_min(1e-6)
+        frequency_ratio = high_frequency.sum(dim=(1, 2, 3)) / magnitude
+
+        global_mean = channel_mean.mean(dim=1, keepdim=True)
+        global_variance = (
+            ((stats_features - global_mean[:, :, None, None]) * valid).square().sum(dim=(1, 2, 3))
+            / (spatial_count.squeeze(1) * stats_features.shape[1]).clamp_min(1.0)
+        )
+        global_contrast = torch.sqrt(global_variance + 1e-6) / (
+            magnitude / (spatial_count.squeeze(1) * stats_features.shape[1]).clamp_min(1.0) + 1e-6
+        )
+
+        descriptor = torch.cat(
+            [channel_mean, channel_std, global_contrast[:, None], frequency_ratio[:, None]], dim=1
+        )
+        descriptor = descriptor.to(dtype=self.predictor[0].weight.dtype)
+        return torch.sigmoid(self.predictor(descriptor)).view(-1, 1, 1, 1)
+
+
+class HBS(nn.Module):
+    """Apply fog-adaptive HBS to every projected feature level.
+
+    For each image and scale this module implements
+    ``F_out = F + alpha * (F_HBS - F)``. It requires no annotations, so the
+    same learned behavior is active during training, evaluation, and export.
+    """
+
+    def __init__(
+        self,
+        channels: int,
+        kernel_sizes: list[int],
+        reduction: int = 4,
+        initial_alpha: float = 0.25,
+    ) -> None:
         super().__init__()
         if not kernel_sizes:
             raise ValueError("kernel_sizes must contain at least one feature level.")
@@ -79,121 +130,44 @@ class HBS(nn.Module):
                 for kernel_size in kernel_sizes
             ]
         )
-
-    @staticmethod
-    def _foreground_mask(
-        boxes: torch.Tensor,
-        height: int,
-        width: int,
-        *,
-        valid_height: int | None = None,
-        valid_width: int | None = None,
-        dtype: torch.dtype,
-        device: torch.device,
-    ) -> torch.Tensor:
-        """Rasterize normalized ``cxcywh`` boxes into one feature-level mask.
-
-        Args:
-            boxes: Normalized boxes with shape ``(N, 4)``.
-            height: Feature-map height.
-            width: Feature-map width.
-            valid_height: Unpadded feature height used to scale normalized box coordinates.
-            valid_width: Unpadded feature width used to scale normalized box coordinates.
-            dtype: Output mask dtype.
-            device: Output mask device.
-
-        Returns:
-            Foreground mask with shape ``(1, H, W)``.
-        """
-        mask = torch.zeros((1, height, width), dtype=dtype, device=device)
-        if boxes.numel() == 0:
-            return mask
-
-        box_height = height if valid_height is None else valid_height
-        box_width = width if valid_width is None else valid_width
-
-        boxes = boxes.detach().to(device=device, dtype=torch.float32)
-        xyxy = torch.empty_like(boxes)
-        xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
-        xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
-        xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2
-        xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2
-        xyxy = xyxy.clamp(0, 1)
-
-        for box in xyxy:
-            x1 = max(0, min(box_width, int(torch.floor(box[0] * box_width).item())))
-            y1 = max(0, min(box_height, int(torch.floor(box[1] * box_height).item())))
-            x2 = max(0, min(box_width, int(torch.ceil(box[2] * box_width).item())))
-            y2 = max(0, min(box_height, int(torch.ceil(box[3] * box_height).item())))
-            if x2 > x1 and y2 > y1:
-                mask[:, y1:y2, x1:x2] = 1
-        return mask
+        self.gates = nn.ModuleList(
+            [
+                FogFrequencyGate(channels=channels, reduction=reduction, initial_alpha=initial_alpha)
+                for _ in kernel_sizes
+            ]
+        )
 
     def forward(
         self,
         features: list[torch.Tensor],
-        targets: list[dict[str, torch.Tensor]],
         padding_masks: list[torch.Tensor | None] | None = None,
-    ) -> list[torch.Tensor]:
-        """Build HBS features while preserving every foreground location.
-
-        Args:
-            features: Projected feature maps, each shaped ``(B, C, H, W)``.
-            targets: Per-image target dictionaries containing normalized ``boxes``.
-            padding_masks: Optional per-level boolean masks shaped ``(B, H, W)`` where ``True`` marks padding.
-
-        Returns:
-            Smoothed feature maps in the same order and shapes as ``features``.
-        """
+        *,
+        return_alphas: bool = False,
+    ) -> list[torch.Tensor] | tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """Adaptively smooth multi-scale projector outputs."""
         if len(features) != len(self.denoisers):
-            raise ValueError(
-                f"Expected {len(self.denoisers)} feature levels, received {len(features)}."
-            )
-        if not features:
-            return []
-        if len(targets) != features[0].shape[0]:
-            raise ValueError(
-                f"Target batch size {len(targets)} does not match feature batch size {features[0].shape[0]}."
-            )
+            raise ValueError(f"Expected {len(self.denoisers)} feature levels, received {len(features)}.")
         if padding_masks is None:
             padding_masks = [None] * len(features)
         if len(padding_masks) != len(features):
-            raise ValueError(
-                f"Expected {len(features)} padding masks, received {len(padding_masks)}."
-            )
+            raise ValueError(f"Expected {len(features)} padding masks, received {len(padding_masks)}.")
 
         outputs: list[torch.Tensor] = []
-        for feature, denoiser, padding_mask in zip(features, self.denoisers, padding_masks):
-            batch_size, _, height, width = feature.shape
-            foreground_mask = torch.stack(
-                [
-                    self._foreground_mask(
-                        targets[batch_index]["boxes"],
-                        height,
-                        width,
-                        valid_height=(
-                            int((~padding_mask[batch_index]).any(dim=1).sum().item())
-                            if padding_mask is not None
-                            else None
-                        ),
-                        valid_width=(
-                            int((~padding_mask[batch_index]).any(dim=0).sum().item())
-                            if padding_mask is not None
-                            else None
-                        ),
-                        dtype=feature.dtype,
-                        device=feature.device,
-                    )
-                    for batch_index in range(batch_size)
-                ],
-                dim=0,
+        alphas: list[torch.Tensor] = []
+        for feature, padding_mask, denoiser, gate in zip(
+            features, padding_masks, self.denoisers, self.gates
+        ):
+            valid = (
+                torch.ones_like(feature[:, :1])
+                if padding_mask is None
+                else (~padding_mask).unsqueeze(1).to(dtype=feature.dtype)
             )
-            if padding_mask is None:
-                valid_mask = torch.ones_like(foreground_mask)
-            else:
-                valid_mask = (~padding_mask).unsqueeze(1).to(dtype=feature.dtype)
-                foreground_mask = foreground_mask * valid_mask
-            background_mask = valid_mask - foreground_mask
-            smoothed_background = denoiser(feature * background_mask)
-            outputs.append(smoothed_background * background_mask + feature * (1 - background_mask))
+            hbs_feature = denoiser(feature * valid)
+            alpha = gate(feature, padding_mask)
+            fused = feature + alpha * (hbs_feature - feature)
+            outputs.append(fused * valid + feature * (1.0 - valid))
+            alphas.append(alpha)
+
+        if return_alphas:
+            return outputs, alphas
         return outputs
