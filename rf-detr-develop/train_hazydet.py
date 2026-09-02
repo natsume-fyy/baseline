@@ -11,6 +11,7 @@ def main():
     model = RFDETRSmall(
         hbs_enabled=True,
         hbs_reduction=4,
+        hbs_alpha_init=0.1,
     )
 
     model.train(
@@ -23,8 +24,6 @@ def main():
         grad_accum_steps=4,
 
         lr=1e-3,
-
-        hbs_loss_coef=0.25,
 
         device="cuda",
 

@@ -109,12 +109,14 @@ class TestBuildModelCharacterization:
             device="cpu",
             hbs_enabled=True,
             hbs_reduction=8,
+            hbs_alpha_init=0.2,
         )
 
         model = build_model(_make_ns(mc=mc))
 
         assert model.hbs is not None
         assert len(model.hbs.denoisers) == len(mc.projector_scale)
+        assert torch.allclose(model.hbs.alphas, torch.full_like(model.hbs.alphas, 0.2))
 
     def test_num_feature_levels_set_on_args(self) -> None:
         """build_model mutates args.num_feature_levels = len(projector_scale)."""
@@ -217,21 +219,6 @@ class TestBuildCriterionCharacterization:
         assert criterion.weight_dict["loss_ce"] == ns.cls_loss_coef
         assert criterion.weight_dict["loss_bbox"] == ns.bbox_loss_coef
         assert criterion.weight_dict["loss_giou"] == ns.giou_loss_coef
-
-    def test_hbs_weight_dict_uses_configured_coefficient(self) -> None:
-        """Every HBS loss mirrors its normal-branch weight with the HBS coefficient."""
-        mc = RFDETRBaseConfig(num_classes=80, pretrain_weights=None, device="cpu", hbs_enabled=True)
-        tc = TrainConfig(dataset_dir="/tmp", hbs_loss_coef=0.4)
-
-        criterion, _ = build_criterion_and_postprocessors(_make_ns(mc=mc, tc=tc))
-
-        assert criterion.weight_dict["loss_ce_hbs"] == pytest.approx(criterion.weight_dict["loss_ce"] * 0.4)
-        assert criterion.weight_dict["loss_bbox_0_hbs"] == pytest.approx(
-            criterion.weight_dict["loss_bbox_0"] * 0.4
-        )
-        assert criterion.weight_dict["loss_giou_enc_hbs"] == pytest.approx(
-            criterion.weight_dict["loss_giou_enc"] * 0.4
-        )
 
     def test_segmentation_weight_dict_contains_mask_losses(self) -> None:
         mc = RFDETRSegNanoConfig(pretrain_weights=None, device="cpu")

@@ -520,6 +520,7 @@ class ModelConfig(BaseConfig):
     dual_projector_kp_only: bool = False
     hbs_enabled: bool = False
     hbs_reduction: int = Field(default=4, ge=1)
+    hbs_alpha_init: float = Field(default=0.1, ge=0.0, le=1.0)
     num_keypoints_per_class: list[int] = Field(default_factory=list)
     num_decoder_registers: int = 0
     mask_downsample_ratio: int = 4
@@ -540,9 +541,8 @@ class ModelConfig(BaseConfig):
     def _validate_hbs_task(self) -> "ModelConfig":
         """Restrict the current HBS integration to bounding-box detection.
 
-        HBS is implemented as an auxiliary detection branch. Segmentation and keypoint losses require additional
-        task-specific masking semantics and are intentionally rejected instead of silently applying an unvalidated
-        training objective.
+        HBS currently enhances the main detection feature path. Segmentation and keypoint variants are intentionally
+        rejected until the gated features have been validated for those tasks.
         """
         if self.hbs_enabled and (self.segmentation_head or self.use_grouppose_keypoints):
             raise ValueError("HBS currently supports detection models only.")
@@ -1056,7 +1056,6 @@ class TrainConfig(BaseConfig):
     lr_component_decay: float = 0.7
     drop_path: float = 0.0
     cls_loss_coef: float = 1.0
-    hbs_loss_coef: float = Field(default=0.25, ge=0.0)
     # Detection-vs-keypoint distinction is derived by callers via `include_keypoints`, not
     # stored on this field. See rfdetr.datasets.transforms.AlbumentationsWrapper.from_config
     # for the None/[]/[...] tri-state contract applied at the augmentation-pipeline boundary.
