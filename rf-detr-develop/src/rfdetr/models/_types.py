@@ -92,6 +92,7 @@ class BuilderArgs(Protocol):
     # mislead consumers into thinking they must be supplied.
     aux_loss: bool
     focal_alpha: float
+    hbs_loss_coef: float
     bbox_loss_coef: float
     giou_loss_coef: float
     set_cost_class: float

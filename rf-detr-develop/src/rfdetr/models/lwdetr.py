@@ -921,6 +921,10 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
             aux_weight_dict.update({k + "_enc": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
+    if getattr(args, "hbs_enabled", False):
+        hbs_loss_coef = getattr(args, "hbs_loss_coef", 0.25)
+        weight_dict.update({f"{key}_hbs": value * hbs_loss_coef for key, value in tuple(weight_dict.items())})
+
     losses = ["labels", "boxes", "cardinality"]
     if args.segmentation_head:
         losses.append("masks")

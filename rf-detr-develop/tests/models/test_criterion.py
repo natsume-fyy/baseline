@@ -5,6 +5,8 @@
 # ------------------------------------------------------------------------
 """Unit tests for SetCriterion edge paths: _output_device and num_boxes_for_targets."""
 
+from types import MethodType
+
 import pytest
 import torch
 
@@ -104,3 +106,31 @@ class TestNumBoxesForTargets:
 
         # 2 + 1 = 3 boxes; single-process so no all-reduce
         assert result.item() == pytest.approx(3.0)
+
+
+class TestHBSLosses:
+    """Tests for the training-only HBS auxiliary prediction branch."""
+
+    def test_hbs_outputs_are_evaluated_and_suffixed(self) -> None:
+        """Criterion must compute a second loss set for HBS predictions."""
+        criterion = _bare_criterion()
+        criterion.losses = ["boxes"]
+
+        def fake_get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
+            return {"loss_bbox": outputs["marker"]}
+
+        criterion.get_loss = MethodType(fake_get_loss, criterion)
+        outputs = {
+            "pred_logits": torch.zeros(1, 1, 1),
+            "marker": torch.tensor(1.0),
+            "hbs_outputs": {
+                "pred_logits": torch.zeros(1, 1, 1),
+                "marker": torch.tensor(2.0),
+            },
+        }
+        targets = [{"labels": torch.tensor([0])}]
+
+        losses = criterion(outputs, targets, num_boxes=1.0)
+
+        assert losses["loss_bbox"].item() == pytest.approx(1.0)
+        assert losses["loss_bbox_hbs"].item() == pytest.approx(2.0)

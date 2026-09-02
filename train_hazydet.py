@@ -24,6 +24,8 @@ def main():
 
         lr=1e-3,
 
+        hbs_loss_coef=0.25,
+
         device="cuda",
 
         num_workers=8,
