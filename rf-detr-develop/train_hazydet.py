@@ -19,6 +19,7 @@ def main() -> None:
         lr=1e-3,
         device="cuda",
         num_workers=8,
+        progress_bar="tqdm",
         use_ema=True,
         checkpoint_interval=5,
         early_stopping=False,

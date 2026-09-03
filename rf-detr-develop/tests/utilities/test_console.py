@@ -36,6 +36,9 @@ def _minimal_overall(max_dets: int = 500) -> dict:
         "mAP 50:95": 0.4,
         "mAP 50": 0.6,
         "mAP 75": 0.3,
+        "mAP Small": 0.2,
+        "mAP Medium": 0.4,
+        "mAP Large": 0.6,
         f"mAR @{max_dets}": 0.5,
         "F1": 0.55,
         "Precision": 0.6,
@@ -66,6 +69,14 @@ class TestRenderOverallMerged:
         """Formatted metric values appear in the output."""
         result = _render_overall_merged("Val", _minimal_overall(500), 500)
         assert "0.4000" in result
+
+    def test_size_specific_map_present(self) -> None:
+        """Small, medium, and large object AP values appear in the summary."""
+        result = _render_overall_merged("Val", _minimal_overall(), 500)
+        assert "mAP by size" in result
+        assert "Small" in result
+        assert "Medium" in result
+        assert "Large" in result
 
     def test_nan_renders_as_em_dash(self) -> None:
         """NaN values render as '—' (em-dash)."""

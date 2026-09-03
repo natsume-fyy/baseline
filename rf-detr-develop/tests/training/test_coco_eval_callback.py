@@ -65,6 +65,9 @@ def _minimal_metrics(pfx: str = "", max_dets: int = 500) -> dict:
         f"{pfx}map": torch.tensor(0.4),
         f"{pfx}map_50": torch.tensor(0.6),
         f"{pfx}map_75": torch.tensor(0.3),
+        f"{pfx}map_small": torch.tensor(0.2),
+        f"{pfx}map_medium": torch.tensor(0.4),
+        f"{pfx}map_large": torch.tensor(0.6),
         f"{pfx}mar_{max_dets}": torch.tensor(0.5),
     }
 
@@ -499,7 +502,7 @@ class TestEpochEndCommon:
     """Metric logging and state reset shared by on_validation_epoch_end and on_test_epoch_end."""
 
     def test_detection_core_metrics_are_logged(self, stage, hook, prefix) -> None:
-        """mAP_50_95, mAP_50, mAP_75, mAR are always logged under the correct prefix."""
+        """Overall and size-specific mAP plus mAR are logged under the correct prefix."""
         cb = COCOEvalCallback(max_dets=500)
         cb.setup(_make_trainer(), _make_pl_module(), stage=stage)
         cb.map_metric = MagicMock(name="map_metric")
@@ -512,6 +515,9 @@ class TestEpochEndCommon:
         assert f"{prefix}mAP_50_95" in logged_keys
         assert f"{prefix}mAP_50" in logged_keys
         assert f"{prefix}mAP_75" in logged_keys
+        assert f"{prefix}mAP_small" in logged_keys
+        assert f"{prefix}mAP_medium" in logged_keys
+        assert f"{prefix}mAP_large" in logged_keys
         assert f"{prefix}mAR" in logged_keys
 
     def test_f1_metrics_logged_when_gt_present(self, stage, hook, prefix) -> None:
