@@ -24,7 +24,7 @@ def main():
 
         lr=1e-3,
 
-        hbs_loss_coef=0.25,
+        hbs_loss_coef="auto",
 
         device="cuda",
 

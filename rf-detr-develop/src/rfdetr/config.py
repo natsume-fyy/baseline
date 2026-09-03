@@ -13,7 +13,7 @@ import warnings
 from collections.abc import Callable, Mapping
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar, Dict, Literal, Optional, TypeAlias
+from typing import Annotated, Any, ClassVar, Dict, Literal, Optional, TypeAlias
 
 import torch
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
@@ -1056,7 +1056,7 @@ class TrainConfig(BaseConfig):
     lr_component_decay: float = 0.7
     drop_path: float = 0.0
     cls_loss_coef: float = 1.0
-    hbs_loss_coef: float = Field(default=0.25, ge=0.0)
+    hbs_loss_coef: Annotated[float, Field(ge=0.0)] | Literal["auto"] = 0.25
     # Detection-vs-keypoint distinction is derived by callers via `include_keypoints`, not
     # stored on this field. See rfdetr.datasets.transforms.AlbumentationsWrapper.from_config
     # for the None/[]/[...] tri-state contract applied at the augmentation-pipeline boundary.

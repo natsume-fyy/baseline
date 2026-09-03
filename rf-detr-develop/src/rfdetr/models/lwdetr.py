@@ -135,6 +135,7 @@ class LWDETR(nn.Module):
         hbs_enabled: bool = False,
         hbs_reduction: int = 4,
         hbs_kernel_sizes: list[int] | None = None,
+        hbs_adaptive_loss: bool = False,
     ):
         """Initializes the model.
 
@@ -172,6 +173,9 @@ class LWDETR(nn.Module):
             if hbs_enabled
             else None
         )
+        # Kendall-style uncertainty weighting learns the HBS contribution while
+        # its log-variance regularizer prevents the trivial zero-weight solution.
+        self.hbs_loss_log_var = nn.Parameter(torch.zeros(())) if hbs_adaptive_loss else None
 
         # iter update
         self.lite_refpoint_refine = lite_refpoint_refine
@@ -504,6 +508,8 @@ class LWDETR(nn.Module):
                 poss,
                 hbs_cross_attn_features,
             )
+            if self.hbs_loss_log_var is not None:
+                out["hbs_loss_log_var"] = self.hbs_loss_log_var
         return out
 
     def _forward_from_backbone_features(
@@ -893,6 +899,7 @@ def build_model(args: "BuilderArgs"):
             (int(math.log2({"P3": 8, "P4": 16, "P5": 32, "P6": 64}[level])) // 2 * 2) + 1
             for level in args.projector_scale
         ],
+        hbs_adaptive_loss=getattr(args, "hbs_loss_coef", 0.25) == "auto",
     )
     return model
 
@@ -923,7 +930,11 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
 
     if getattr(args, "hbs_enabled", False):
         hbs_loss_coef = getattr(args, "hbs_loss_coef", 0.25)
-        weight_dict.update({f"{key}_hbs": value * hbs_loss_coef for key, value in tuple(weight_dict.items())})
+        if hbs_loss_coef == "auto":
+            weight_dict.update({f"{key}_hbs": value for key, value in tuple(weight_dict.items())})
+            weight_dict["loss_hbs_uncertainty"] = 1.0
+        else:
+            weight_dict.update({f"{key}_hbs": value * hbs_loss_coef for key, value in tuple(weight_dict.items())})
 
     losses = ["labels", "boxes", "cardinality"]
     if args.segmentation_head:

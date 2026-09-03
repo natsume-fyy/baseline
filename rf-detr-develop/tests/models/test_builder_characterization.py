@@ -116,6 +116,16 @@ class TestBuildModelCharacterization:
         assert model.hbs is not None
         assert len(model.hbs.denoisers) == len(mc.projector_scale)
 
+    def test_hbs_auto_loss_builds_trainable_log_variance(self) -> None:
+        """Auto HBS weighting must register its scalar with the model optimizer parameters."""
+        mc = RFDETRBaseConfig(num_classes=80, pretrain_weights=None, device="cpu", hbs_enabled=True)
+        tc = TrainConfig(dataset_dir="/tmp", hbs_loss_coef="auto")
+
+        model = build_model(_make_ns(mc=mc, tc=tc))
+
+        assert isinstance(model.hbs_loss_log_var, torch.nn.Parameter)
+        assert model.hbs_loss_log_var.requires_grad
+
     def test_num_feature_levels_set_on_args(self) -> None:
         """build_model mutates args.num_feature_levels = len(projector_scale)."""
         mc = RFDETRBaseConfig(num_classes=80, pretrain_weights=None, device="cpu")
@@ -232,6 +242,17 @@ class TestBuildCriterionCharacterization:
         assert criterion.weight_dict["loss_giou_enc_hbs"] == pytest.approx(
             criterion.weight_dict["loss_giou_enc"] * 0.4
         )
+
+    def test_hbs_weight_dict_supports_adaptive_coefficient(self) -> None:
+        """Auto HBS weighting keeps base weights and adds the uncertainty regularizer."""
+        mc = RFDETRBaseConfig(num_classes=80, pretrain_weights=None, device="cpu", hbs_enabled=True)
+        tc = TrainConfig(dataset_dir="/tmp", hbs_loss_coef="auto")
+
+        criterion, _ = build_criterion_and_postprocessors(_make_ns(mc=mc, tc=tc))
+
+        assert criterion.weight_dict["loss_ce_hbs"] == criterion.weight_dict["loss_ce"]
+        assert criterion.weight_dict["loss_bbox_0_hbs"] == criterion.weight_dict["loss_bbox_0"]
+        assert criterion.weight_dict["loss_hbs_uncertainty"] == 1.0
 
     def test_segmentation_weight_dict_contains_mask_losses(self) -> None:
         mc = RFDETRSegNanoConfig(pretrain_weights=None, device="cpu")
