@@ -19,6 +19,7 @@ import torch.nn.functional as F  # noqa: N812
 
 from rfdetr.models.backbone.base import BackboneBase
 from rfdetr.models.backbone.dinov2 import DinoV2
+from rfdetr.models.backbone.frequency import UnderwaterFrequencyAwareFeatureReweighting
 from rfdetr.models.backbone.projector import MultiScaleProjector
 from rfdetr.utilities.logger import get_logger
 from rfdetr.utilities.tensors import NestedTensor
@@ -52,6 +53,12 @@ class Backbone(BackboneBase):
         num_windows: int = 4,
         positional_encoding_size: int = 0,
         dual_projector: bool = False,
+        uffr: bool = False,
+        uffr_freq_radius: float = 0.6,
+        uffr_alpha_low: float = 0.95,
+        uffr_alpha_high: float = 1.55,
+        uffr_learnable: bool = True,
+        uffr_feature_indexes: list[int] | None = None,
     ):
         super().__init__()
         # an example name here would be "dinov2_base" or "dinov2_registers_windowed_base"
@@ -91,6 +98,32 @@ class Backbone(BackboneBase):
             for param in self.encoder.parameters():
                 param.requires_grad = False
 
+        self.uffr_feature_indexes = tuple(uffr_feature_indexes or (1, 2, 3))
+        invalid_uffr_indexes = [
+            index for index in self.uffr_feature_indexes if index >= len(self.encoder._out_feature_channels)
+        ]
+        if uffr and invalid_uffr_indexes:
+            raise ValueError(
+                "uffr_feature_indexes contains indexes outside the backbone outputs: "
+                f"{invalid_uffr_indexes}; available indexes are 0 to {len(self.encoder._out_feature_channels) - 1}."
+            )
+        uffr_channels = self.encoder._out_feature_channels[0]
+        if uffr and any(
+            channels != uffr_channels for channels in self.encoder._out_feature_channels
+        ):
+            raise ValueError("UFFR currently requires all selected backbone outputs to have the same channel count.")
+        self.uffr = (
+            UnderwaterFrequencyAwareFeatureReweighting(
+                channels=uffr_channels,
+                freq_radius=uffr_freq_radius,
+                alpha_low=uffr_alpha_low,
+                alpha_high=uffr_alpha_high,
+                learnable=uffr_learnable,
+            )
+            if uffr
+            else None
+        )
+
         self.projector_scale = projector_scale
         assert len(self.projector_scale) > 0
         # x[0]
@@ -121,6 +154,22 @@ class Backbone(BackboneBase):
 
         self._export = False
 
+    def _apply_uffr(self, features: list[torch.Tensor]) -> list[torch.Tensor]:
+        """Apply the shared UFFR module to configured backbone feature levels.
+
+        Args:
+            features: Intermediate backbone features in shallow-to-deep order.
+
+        Returns:
+            A new list with selected middle/high-level features reweighted.
+        """
+        if self.uffr is None:
+            return features
+        reweighted = list(features)
+        for index in self.uffr_feature_indexes:
+            reweighted[index] = self.uffr(reweighted[index])
+        return reweighted
+
     def export(self):
         self._export = True
         self._forward_origin = self.forward
@@ -146,6 +195,7 @@ class Backbone(BackboneBase):
         """"""
         # (H, W, B, C)
         raw_feats = self.encoder(tensor_list.tensors)
+        raw_feats = self._apply_uffr(raw_feats)
         feats = self.projector(raw_feats)
         # x: [(B, C, H, W)]
         out = []
@@ -169,6 +219,7 @@ class Backbone(BackboneBase):
 
     def forward_export(self, tensors: torch.Tensor):
         raw_feats = self.encoder(tensors)
+        raw_feats = self._apply_uffr(raw_feats)
         feats = self.projector(raw_feats)
         out_feats = []
         out_masks = []

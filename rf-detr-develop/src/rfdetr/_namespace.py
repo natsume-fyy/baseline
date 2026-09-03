@@ -59,6 +59,12 @@ _MC_NAMESPACE_FIELDS = {
     "num_decoder_registers",
     "postprocess_trace_alpha",
     "two_stage",
+    "uffr",
+    "uffr_alpha_high",
+    "uffr_alpha_low",
+    "uffr_feature_indexes",
+    "uffr_freq_radius",
+    "uffr_learnable",
 }
 
 # TrainConfig fields NOT forwarded to the legacy namespace.

@@ -145,6 +145,12 @@ class ModelConfig(BaseConfig):
     mask_downsample_ratio: int = 4
     backbone_lora: bool = False
     freeze_encoder: bool = False
+    uffr: bool = False
+    uffr_freq_radius: float = Field(default=0.6, gt=0.0, le=2**0.5)
+    uffr_alpha_low: float = Field(default=0.95, allow_inf_nan=False)
+    uffr_alpha_high: float = Field(default=1.55, allow_inf_nan=False)
+    uffr_learnable: bool = True
+    uffr_feature_indexes: List[int] = Field(default_factory=lambda: [1, 2, 3])
     license: str = "Apache-2.0"
     model_name: Optional[str] = Field(
         default=None,
@@ -175,6 +181,18 @@ class ModelConfig(BaseConfig):
                 stacklevel=2,
             )
         return self
+
+    @field_validator("uffr_feature_indexes", mode="after")
+    @classmethod
+    def validate_uffr_feature_indexes(cls, value: List[int]) -> List[int]:
+        """Validate that UFFR targets unique, non-negative backbone output indexes."""
+        if not value:
+            raise ValueError("uffr_feature_indexes must contain at least one feature index.")
+        if any(index < 0 for index in value):
+            raise ValueError("uffr_feature_indexes cannot contain negative indexes.")
+        if len(set(value)) != len(value):
+            raise ValueError("uffr_feature_indexes cannot contain duplicate indexes.")
+        return value
 
     @model_validator(mode="after")
     def _sync_pe_with_resolution(self) -> "ModelConfig":

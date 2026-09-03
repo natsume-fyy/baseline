@@ -792,6 +792,12 @@ def build_model(args: "BuilderArgs"):
         num_windows=args.num_windows,
         positional_encoding_size=args.positional_encoding_size,
         dual_projector=args.dual_projector,
+        uffr=getattr(args, "uffr", False),
+        uffr_freq_radius=getattr(args, "uffr_freq_radius", 0.6),
+        uffr_alpha_low=getattr(args, "uffr_alpha_low", 0.95),
+        uffr_alpha_high=getattr(args, "uffr_alpha_high", 1.55),
+        uffr_learnable=getattr(args, "uffr_learnable", True),
+        uffr_feature_indexes=getattr(args, "uffr_feature_indexes", [1, 2, 3]),
     )
     if args.encoder_only:
         return backbone[0].encoder, None, None

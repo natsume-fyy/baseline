@@ -82,6 +82,12 @@ def build_backbone(
     num_windows,
     positional_encoding_size,
     dual_projector: bool = False,
+    uffr: bool = False,
+    uffr_freq_radius: float = 0.6,
+    uffr_alpha_low: float = 0.95,
+    uffr_alpha_high: float = 1.55,
+    uffr_learnable: bool = True,
+    uffr_feature_indexes: list[int] | None = None,
 ):
     """
     Useful args:
@@ -113,6 +119,12 @@ def build_backbone(
         num_windows=num_windows,
         positional_encoding_size=positional_encoding_size,
         dual_projector=dual_projector,
+        uffr=uffr,
+        uffr_freq_radius=uffr_freq_radius,
+        uffr_alpha_low=uffr_alpha_low,
+        uffr_alpha_high=uffr_alpha_high,
+        uffr_learnable=uffr_learnable,
+        uffr_feature_indexes=uffr_feature_indexes,
     )
 
     model = Joiner(backbone, position_embedding)

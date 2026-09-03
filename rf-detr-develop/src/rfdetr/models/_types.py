@@ -36,6 +36,12 @@ class BuilderArgs(Protocol):
     dec_layers: int
     freeze_encoder: bool
     backbone_lora: bool
+    uffr: bool
+    uffr_freq_radius: float
+    uffr_alpha_low: float
+    uffr_alpha_high: float
+    uffr_learnable: bool
+    uffr_feature_indexes: List[int]
     two_stage: bool
     use_grouppose_keypoints: bool
     keypoint_cross_attn: bool
