@@ -42,6 +42,7 @@ from rfdetr.models.criterion import (  # noqa: F401 — backward compat
     sigmoid_focal_loss,
     sigmoid_varifocal_loss,
 )
+from rfdetr.models.degradation_aware import DegradationAwareFusion
 from rfdetr.models.heads.segmentation import SegmentationHead
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
@@ -131,6 +132,7 @@ class LWDETR(nn.Module):
         use_grouppose_keypoints=False,
         num_keypoints_per_class: list[int] | None = None,
         grouppose_keypoint_dim_downscale: int = 1,
+        degradation_aware: bool = False,
     ):
         """Initializes the model.
 
@@ -143,6 +145,8 @@ class LWDETR(nn.Module):
             aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
             group_detr: Number of groups to speed detr training. Default is 1.
             lite_refpoint_refine: TODO
+            degradation_aware: Whether to refine backbone outputs with the
+                parallel degradation-aware branch before the transformer.
         """
         super().__init__()
         self.num_queries = num_queries
@@ -157,6 +161,7 @@ class LWDETR(nn.Module):
         nn.init.constant_(self.refpoint_embed.weight.data, 0)
 
         self.backbone = backbone
+        self.degradation_aware_fusion = DegradationAwareFusion(hidden_dim) if degradation_aware else None
         self.aux_loss = aux_loss
         self.group_detr = group_detr
 
@@ -468,6 +473,8 @@ class LWDETR(nn.Module):
         masks = []
         for feat in features:
             src, mask = feat.decompose()
+            if self.degradation_aware_fusion is not None:
+                src = self.degradation_aware_fusion(src)
             srcs.append(src)
             masks.append(mask)
             assert mask is not None
@@ -602,6 +609,8 @@ class LWDETR(nn.Module):
 
     def forward_export(self, tensors):
         srcs, _, poss, cross_attn_srcs = self.backbone(tensors)
+        if self.degradation_aware_fusion is not None:
+            srcs = [self.degradation_aware_fusion(src) for src in srcs]
         # only use one group in inference
         refpoint_embed_weight = self.refpoint_embed.weight[: self.num_queries]
         query_feat_weight = self.query_feat.weight[: self.num_queries]
@@ -826,6 +835,7 @@ def build_model(args: "BuilderArgs"):
         use_grouppose_keypoints=getattr(args, "use_grouppose_keypoints", False),
         num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
+        degradation_aware=getattr(args, "degradation_aware", False),
     )
     return model
 

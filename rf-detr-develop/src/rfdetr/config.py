@@ -145,6 +145,7 @@ class ModelConfig(BaseConfig):
     mask_downsample_ratio: int = 4
     backbone_lora: bool = False
     freeze_encoder: bool = False
+    degradation_aware: bool = False
     license: str = "Apache-2.0"
     model_name: Optional[str] = Field(
         default=None,

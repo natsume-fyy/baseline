@@ -26,6 +26,7 @@ _MC_NAMESPACE_FIELDS = {
     "ca_nheads",
     "dec_layers",
     "dec_n_points",
+    "degradation_aware",
     "device",
     "encoder",
     "freeze_encoder",

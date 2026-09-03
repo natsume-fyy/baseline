@@ -36,6 +36,7 @@ class BuilderArgs(Protocol):
     dec_layers: int
     freeze_encoder: bool
     backbone_lora: bool
+    degradation_aware: bool
     two_stage: bool
     use_grouppose_keypoints: bool
     keypoint_cross_attn: bool
