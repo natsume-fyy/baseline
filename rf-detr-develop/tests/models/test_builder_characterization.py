@@ -114,7 +114,7 @@ class TestBuildModelCharacterization:
         model = build_model(_make_ns(mc=mc))
 
         assert model.hbs is not None
-        assert len(model.hbs.denoisers) == len(mc.projector_scale)
+        assert len(model.hbs.smoothers) == len(mc.projector_scale)
 
     def test_num_feature_levels_set_on_args(self) -> None:
         """build_model mutates args.num_feature_levels = len(projector_scale)."""
@@ -224,6 +224,7 @@ class TestBuildCriterionCharacterization:
         criterion, _ = build_criterion_and_postprocessors(_make_ns(mc=mc))
 
         assert not any(key.endswith("_hbs") for key in criterion.weight_dict)
+        assert criterion.weight_dict["loss_hbs_objectness"] == pytest.approx(0.5)
 
     def test_segmentation_weight_dict_contains_mask_losses(self) -> None:
         mc = RFDETRSegNanoConfig(pretrain_weights=None, device="cpu")

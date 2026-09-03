@@ -104,3 +104,19 @@ class TestNumBoxesForTargets:
 
         # 2 + 1 = 3 boxes; single-process so no all-reduce
         assert result.item() == pytest.approx(3.0)
+
+
+class TestHBSObjectnessLoss:
+    def test_supervises_foreground_protection_map(self) -> None:
+        logits = torch.zeros(1, 1, 8, 8, requires_grad=True)
+        outputs = {
+            "hbs_objectness_logits": [logits],
+            "hbs_padding_masks": [torch.zeros(1, 8, 8, dtype=torch.bool)],
+        }
+        targets = [{"boxes": torch.tensor([[0.5, 0.5, 0.25, 0.25]])}]
+
+        loss = SetCriterion.loss_hbs_objectness(outputs, targets)["loss_hbs_objectness"]
+        loss.backward()
+
+        assert loss.item() > 0
+        assert logits.grad is not None

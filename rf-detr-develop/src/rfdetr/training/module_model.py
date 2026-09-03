@@ -196,6 +196,26 @@ class RFDETRModelModule(LightningModule):
         samples, targets = batch
         batch_size = len(targets)
         outputs = self.model(samples, targets)
+        if "hbs_alphas" in outputs:
+            alpha_metrics = {}
+            for level, alpha in enumerate(outputs["hbs_alphas"]):
+                alpha_metrics[f"train/hbs_alpha_p{level}"] = alpha.mean()
+                alpha_metrics[f"train/hbs_alpha_std_p{level}"] = alpha.std()
+                alpha_metrics[f"train/hbs_foreground_p{level}"] = outputs[
+                    "hbs_objectness_logits"
+                ][level].detach().sigmoid().mean()
+                alpha_metrics[f"train/hbs_delta_ratio_p{level}"] = outputs[
+                    "hbs_smoothing_ratios"
+                ][level].mean()
+            if "hbs_image_haze" in outputs:
+                alpha_metrics["train/hbs_image_haze"] = outputs["hbs_image_haze"].mean()
+            self.log_dict(
+                alpha_metrics,
+                on_step=False,
+                on_epoch=True,
+                sync_dist=bool(self.train_config.train_log_sync_dist),
+                batch_size=batch_size,
+            )
         if self._use_manual_optimization:
             loss_dict, raw_loss, normalizer = self._compute_train_losses(outputs, targets)
             loss_for_backward = self._scale_loss_for_accumulation(raw_loss, normalizer)

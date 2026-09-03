@@ -149,8 +149,8 @@ class LWDETR(nn.Module):
             group_detr: Number of groups to speed detr training. Default is 1.
             lite_refpoint_refine: TODO
             hbs_enabled: Whether to smooth projected features with adaptive HBS.
-            hbs_reduction: Bottleneck reduction for the HBS denoisers and gates.
-            hbs_initial_alpha: Initial value of each learnable per-image gate.
+            hbs_reduction: Bottleneck reduction for the HBS scene and spatial gates.
+            hbs_initial_alpha: Initial value of each learnable scene-level gate.
         """
         super().__init__()
         self.num_queries = num_queries
@@ -481,22 +481,46 @@ class LWDETR(nn.Module):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
         features, poss, cross_attn_features = self.backbone(samples)
+        hbs_aux = None
         if self.hbs is not None:
-            features = self._apply_hbs(features)
+            features, hbs_aux = self._apply_hbs(features, samples, return_aux=self.training)
             if cross_attn_features is not None:
-                cross_attn_features = self._apply_hbs(cross_attn_features)
+                cross_attn_features, _ = self._apply_hbs(cross_attn_features, samples, return_aux=False)
 
-        return self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
+        out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
+        if hbs_aux is not None:
+            out["hbs_objectness_logits"] = hbs_aux["objectness_logits"]
+            out["hbs_padding_masks"] = hbs_aux["padding_masks"]
+            # Detached diagnostics make gate collapse visible without retaining graphs.
+            out["hbs_alphas"] = [alpha.detach() for alpha in hbs_aux["alphas"]]
+            out["hbs_image_haze"] = hbs_aux["image_haze"].detach()
+            out["hbs_smoothing_ratios"] = [
+                ratio.detach() for ratio in hbs_aux["smoothing_ratios"]
+            ]
+        return out
 
-    def _apply_hbs(self, features: list[NestedTensor]) -> list[NestedTensor]:
+    def _apply_hbs(
+        self,
+        features: list[NestedTensor],
+        samples: NestedTensor,
+        *,
+        return_aux: bool,
+    ) -> tuple[list[NestedTensor], dict | None]:
         """Insert adaptive HBS between the projector and Transformer Decoder."""
         assert self.hbs is not None
-        tensors = self.hbs(
+        result = self.hbs(
             [feature.tensors for feature in features],
             [feature.mask for feature in features],
+            images=samples.tensors,
+            image_padding_mask=samples.mask,
+            return_aux=return_aux,
         )
+        if return_aux:
+            tensors, aux = result
+        else:
+            tensors, aux = result, None
         assert isinstance(tensors, list)
-        return [NestedTensor(tensor, feature.mask) for tensor, feature in zip(tensors, features)]
+        return [NestedTensor(tensor, feature.mask) for tensor, feature in zip(tensors, features)], aux
 
     def _forward_from_backbone_features(
         self,
@@ -655,6 +679,11 @@ class LWDETR(nn.Module):
 
     def forward_export(self, tensors):
         srcs, _, poss, cross_attn_srcs = self.backbone(tensors)
+        if self.hbs is not None:
+            srcs = self.hbs(srcs, images=tensors)
+            if cross_attn_srcs is not None:
+                cross_attn_srcs = self.hbs(cross_attn_srcs, images=tensors)
+            assert isinstance(srcs, list)
         # only use one group in inference
         refpoint_embed_weight = self.refpoint_embed.weight[: self.num_queries]
         query_feat_weight = self.query_feat.weight[: self.num_queries]
@@ -913,6 +942,9 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
         if args.two_stage:
             aux_weight_dict.update({k + "_enc": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
+
+    if getattr(args, "hbs_enabled", False):
+        weight_dict["loss_hbs_objectness"] = getattr(args, "hbs_objectness_loss_coef", 0.5)
 
     losses = ["labels", "boxes", "cardinality"]
     if args.segmentation_head:

@@ -23,6 +23,7 @@ from rfdetr.models.heads.segmentation import (
     get_uncertain_point_coords_with_randomness,
     point_sample,
 )
+from rfdetr.models.hbs import rasterize_foreground_mask
 from rfdetr.models.math import accuracy
 from rfdetr.utilities import box_ops
 from rfdetr.utilities.distributed import get_world_size, is_dist_avail_and_initialized
@@ -589,6 +590,62 @@ class SetCriterion(nn.Module):
         tgt_idx = torch.cat([tgt for (_, tgt) in indices])
         return batch_idx, tgt_idx
 
+    @staticmethod
+    def loss_hbs_objectness(
+        outputs: dict[str, Any],
+        targets: list[dict[str, torch.Tensor]],
+    ) -> dict[str, torch.Tensor]:
+        """Supervise HBS foreground protection maps with expanded target boxes."""
+        logits_per_level = outputs["hbs_objectness_logits"]
+        masks_per_level = outputs["hbs_padding_masks"]
+        if len(logits_per_level) != len(masks_per_level):
+            raise ValueError("HBS objectness logits and padding masks must have equal lengths.")
+
+        level_losses = []
+        for logits, padding_masks in zip(logits_per_level, masks_per_level):
+            batch_size, _, height, width = logits.shape
+            if batch_size != len(targets):
+                raise ValueError("HBS objectness batch size does not match targets.")
+            foreground = torch.stack(
+                [
+                    rasterize_foreground_mask(
+                        target["boxes"],
+                        height,
+                        width,
+                        None if padding_masks is None else padding_masks[index],
+                        dtype=logits.dtype,
+                        device=logits.device,
+                    )
+                    for index, target in enumerate(targets)
+                ],
+                dim=0,
+            )
+            valid = (
+                torch.ones_like(foreground)
+                if padding_masks is None
+                else (~padding_masks).unsqueeze(1).to(dtype=logits.dtype)
+            )
+            probability = logits.sigmoid()
+            ce_loss = F.binary_cross_entropy_with_logits(logits, foreground, reduction="none")
+            p_t = probability * foreground + (1.0 - probability) * (1.0 - foreground)
+            alpha_t = 0.75 * foreground + 0.25 * (1.0 - foreground)
+            focal_loss = alpha_t * (1.0 - p_t).square() * ce_loss * valid
+            positive = foreground * valid
+            negative = (1.0 - foreground) * valid
+            positive_loss = (focal_loss * positive).flatten(1).sum(1) / (
+                positive.flatten(1).sum(1).clamp_min(1.0)
+            )
+            negative_loss = (focal_loss * negative).flatten(1).sum(1) / (
+                negative.flatten(1).sum(1).clamp_min(1.0)
+            )
+            # Normalize foreground/background separately so small boxes cannot
+            # disappear in the much larger background pixel population.
+            per_image = positive_loss + negative_loss
+            level_losses.append(per_image.mean())
+
+        loss = torch.stack(level_losses).mean()
+        return {"loss_hbs_objectness": loss}
+
     def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
         loss_map = {
             "labels": self.loss_labels,
@@ -656,7 +713,11 @@ class SetCriterion(nn.Module):
             {}
         """
         group_detr = self.group_detr if self.training else 1
-        outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
+        outputs_without_aux = {
+            key: value
+            for key, value in outputs.items()
+            if key != "aux_outputs" and not key.startswith("hbs_")
+        }
 
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets, group_detr=group_detr)
@@ -697,5 +758,8 @@ class SetCriterion(nn.Module):
                 l_dict = self.get_loss(loss, enc_outputs, targets, indices, num_boxes, **kwargs)
                 l_dict = {k + "_enc": v for k, v in l_dict.items()}
                 losses.update(l_dict)
+
+        if "hbs_objectness_logits" in outputs:
+            losses.update(self.loss_hbs_objectness(outputs, targets))
 
         return losses

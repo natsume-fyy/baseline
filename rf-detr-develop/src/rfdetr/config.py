@@ -479,8 +479,8 @@ class ModelConfig(BaseConfig):
         gradient_checkpointing: Trade compute for memory by checkpointing activations. Defaults
             to ``False``.
         hbs_enabled: Enable fog-adaptive smoothing between the multi-scale projector and Decoder.
-        hbs_reduction: Bottleneck reduction used by the HBS denoisers and gate MLPs.
-        hbs_initial_alpha: Initial residual smoothing strength before the gates adapt through training.
+        hbs_reduction: Bottleneck reduction used by the HBS spatial and scene gate networks.
+        hbs_initial_alpha: Initial scene-level gate strength before spatial and foreground protection.
     """
 
     encoder: EncoderName
@@ -1048,6 +1048,7 @@ class TrainConfig(BaseConfig):
     lr_component_decay: float = 0.7
     drop_path: float = 0.0
     cls_loss_coef: float = 1.0
+    hbs_objectness_loss_coef: float = Field(default=0.5, ge=0.0)
     # Detection-vs-keypoint distinction is derived by callers via `include_keypoints`, not
     # stored on this field. See rfdetr.datasets.transforms.AlbumentationsWrapper.from_config
     # for the None/[]/[...] tri-state contract applied at the augmentation-pipeline boundary.
