@@ -196,6 +196,48 @@ def _warn_on_partial_load(incompatible: Any, pretrain_weights_path: str) -> None
     )
 
 
+def _drop_incompatible_projector_weights(
+    checkpoint_state: dict[str, Any], model_state: dict[str, Any]
+) -> list[str]:
+    """Drop checkpoint projector tensors when the configured pyramid scale changes.
+
+    ``load_state_dict(strict=False)`` still raises for a matching key whose tensor
+    shape differs. Switching, for example, RF-DETR Small from its pretrained P4
+    projector to P3 changes both the sampling layers and fusion-channel shapes.
+    When any such mismatch is detected, the complete projector is reinitialized
+    instead of mixing weights trained for two different pyramid levels.
+
+    Returns:
+        Names removed from ``checkpoint_state``. An empty list means the
+        checkpoint projector is shape-compatible with the configured model.
+    """
+    projector_prefixes = (
+        "backbone.0.projector.",
+        "backbone.0.cross_attn_projector.",
+    )
+
+    has_shape_mismatch = any(
+        key.startswith(projector_prefixes)
+        and key in model_state
+        and hasattr(value, "shape")
+        and hasattr(model_state[key], "shape")
+        and tuple(value.shape) != tuple(model_state[key].shape)
+        for key, value in checkpoint_state.items()
+    )
+    if not has_shape_mismatch:
+        return []
+
+    removed = [key for key in checkpoint_state if key.startswith(projector_prefixes)]
+    for key in removed:
+        checkpoint_state.pop(key)
+    logger.warning(
+        "Checkpoint projector shapes do not match the configured projector_scale; "
+        "reinitializing the projector and skipping %d checkpoint tensor(s).",
+        len(removed),
+    )
+    return removed
+
+
 def interpolate_position_embeddings(
     checkpoint_state: dict,
     pe_size: int,
@@ -467,6 +509,9 @@ def load_pretrain_weights(
                 checkpoint["model"][name] = tensor[: mc.num_queries * mc.group_detr]
 
     checkpoint["model"] = remap_projector_to_cross_attn(checkpoint["model"], nn_model)
+    current_model_state = nn_model.state_dict() if hasattr(nn_model, "state_dict") else {}
+    if isinstance(current_model_state, dict):
+        _drop_incompatible_projector_weights(checkpoint["model"], current_model_state)
     # Detection checkpoints/configs may omit keypoint schema fields; absence means no keypoint reconciliation.
     configured_keypoint_schema = list(getattr(mc, "num_keypoints_per_class", []) or [])
     checkpoint_keypoint_schema = None
@@ -493,7 +538,7 @@ def load_pretrain_weights(
     # Dropping only this key avoids hard load failures while preserving all
     # learned weights.
     ckpt_kp_active_mask = checkpoint["model"].get("_kp_active_mask")
-    model_state_dict = nn_model.state_dict() if hasattr(nn_model, "state_dict") else {}
+    model_state_dict = current_model_state
     model_kp_active_mask = model_state_dict.get("_kp_active_mask") if isinstance(model_state_dict, dict) else None
     if (
         isinstance(ckpt_kp_active_mask, torch.Tensor)

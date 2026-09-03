@@ -77,6 +77,9 @@ _REQUIRED_DETECTION = frozenset(
         "val/loss",
         "val/mAP_50",
         "val/mAP_50_95",
+        "val/mAP_small",
+        "val/mAP_medium",
+        "val/mAP_large",
         "val/mAR",
     }
 )
@@ -85,6 +88,9 @@ _REQUIRED_DETECTION_EMA = _REQUIRED_DETECTION | frozenset(
     {
         "val/ema_mAP_50",
         "val/ema_mAP_50_95",
+        "val/ema_mAP_small",
+        "val/ema_mAP_medium",
+        "val/ema_mAP_large",
         "val/ema_mAR",
     }
 )

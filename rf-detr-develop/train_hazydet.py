@@ -2,13 +2,14 @@ from rfdetr import RFDETRSmall
 
 
 DATASET_DIR = "/root/autodl-tmp/HazyDet_RFDETR"
-OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_hbs"
+OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_hbs_p3"
 
 
 def main():
 
     # model = RFDETRSmall()
     model = RFDETRSmall(
+        projector_scale=["P3"],
         hbs_enabled=True,
         hbs_reduction=4,
     )

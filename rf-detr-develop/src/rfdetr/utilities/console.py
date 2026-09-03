@@ -104,6 +104,14 @@ def _render_overall_merged(title_pfx: str, overall: dict[str, float], max_dets: 
                 ("75", _fmt(overall["mAP 75"])),
             ],
         ),
+        (
+            "mAP by area",
+            [
+                ("small", _fmt(overall["mAP small"])),
+                ("medium", _fmt(overall["mAP medium"])),
+                ("large", _fmt(overall["mAP large"])),
+            ],
+        ),
         ("mAR", [(mar_lbl, _fmt(overall[mar_key]))]),
         (
             "F1 sweep",

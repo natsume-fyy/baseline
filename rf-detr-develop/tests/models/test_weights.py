@@ -16,7 +16,7 @@ import pytest
 import torch
 
 from rfdetr.config import RFDETRBaseConfig, TrainConfig
-from rfdetr.models.weights import _warn_on_partial_load
+from rfdetr.models.weights import _drop_incompatible_projector_weights, _warn_on_partial_load
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -966,6 +966,43 @@ class TestLoadPretrainWeightsPerGroupQuerySlice:
         expected = [0, 1]
         assert refpoint[:, 0].int().tolist() == expected
         assert query_feat[:, 0].int().tolist() == expected
+
+
+# Projector-scale compatibility
+# ---------------------------------------------------------------------------
+
+
+class TestDropIncompatibleProjectorWeights:
+    """Projector-scale changes must not cause state-dict shape errors."""
+
+    def test_drops_complete_projector_when_one_tensor_shape_differs(self) -> None:
+        checkpoint_state = {
+            "backbone.0.projector.stages.0.weight": torch.zeros(8, 8),
+            "backbone.0.projector.stages.0.bias": torch.zeros(8),
+            "transformer.weight": torch.ones(4, 4),
+        }
+        model_state = {
+            "backbone.0.projector.stages.0.weight": torch.zeros(4, 8),
+            "backbone.0.projector.stages.0.bias": torch.zeros(8),
+            "transformer.weight": torch.ones(4, 4),
+        }
+
+        removed = _drop_incompatible_projector_weights(checkpoint_state, model_state)
+
+        assert set(removed) == {
+            "backbone.0.projector.stages.0.weight",
+            "backbone.0.projector.stages.0.bias",
+        }
+        assert set(checkpoint_state) == {"transformer.weight"}
+
+    def test_keeps_shape_compatible_projector(self) -> None:
+        checkpoint_state = {"backbone.0.projector.weight": torch.zeros(4, 8)}
+        model_state = {"backbone.0.projector.weight": torch.ones(4, 8)}
+
+        removed = _drop_incompatible_projector_weights(checkpoint_state, model_state)
+
+        assert removed == []
+        assert "backbone.0.projector.weight" in checkpoint_state
 
 
 # Partial-load detector

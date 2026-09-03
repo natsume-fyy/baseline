@@ -36,6 +36,9 @@ def _minimal_overall(max_dets: int = 500) -> dict:
         "mAP 50:95": 0.4,
         "mAP 50": 0.6,
         "mAP 75": 0.3,
+        "mAP small": 0.2,
+        "mAP medium": 0.4,
+        "mAP large": 0.6,
         f"mAR @{max_dets}": 0.5,
         "F1": 0.55,
         "Precision": 0.6,
@@ -98,6 +101,14 @@ class TestRenderOverallMerged:
         """MAR column label contains the max_dets value."""
         result = _render_overall_merged("Val", _minimal_overall(100), 100)
         assert "@100" in result
+
+    def test_area_metrics_are_rendered(self) -> None:
+        """Small, medium, and large object AP values appear in the overall table."""
+        result = _render_overall_merged("Val", _minimal_overall(), 500)
+        assert "mAP by area" in result
+        assert "small" in result
+        assert "medium" in result
+        assert "large" in result
 
 
 # ---------------------------------------------------------------------------

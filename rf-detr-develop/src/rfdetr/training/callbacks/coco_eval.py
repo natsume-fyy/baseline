@@ -86,7 +86,8 @@ class COCOEvalCallback(Callback):
 
     Accumulates predictions and targets across validation batches, then at epoch end computes:
 
-    - ``val/mAP_50_95``, ``val/mAP_50``, ``val/mAP_75``, ``val/mAR`` using
+    - ``val/mAP_50_95``, ``val/mAP_50``, ``val/mAP_75``, ``val/mAP_small``,
+      ``val/mAP_medium``, ``val/mAP_large``, and ``val/mAR`` using
       ``torchmetrics.detection.MeanAveragePrecision``.
     - Per-class ``val/AP/<name>`` when class names are available.
     - ``val/F1``, ``val/precision``, ``val/recall`` from a confidence-threshold
@@ -491,6 +492,9 @@ class COCOEvalCallback(Callback):
             "mAP 50:95": float(metrics[f"{pfx}map"]),
             "mAP 50": float(metrics[f"{pfx}map_50"]),
             "mAP 75": float(metrics[f"{pfx}map_75"]),
+            "mAP small": float(metrics[f"{pfx}map_small"]),
+            "mAP medium": float(metrics[f"{pfx}map_medium"]),
+            "mAP large": float(metrics[f"{pfx}map_large"]),
             f"mAR @{self._max_dets}": float(metrics[mar_key]),
         }
 
@@ -501,6 +505,9 @@ class COCOEvalCallback(Callback):
             f"{split}/mAP_50", metrics[f"{pfx}map_50"], prog_bar=True, logger=True, on_step=False, on_epoch=True
         )
         pl_module.log(f"{split}/mAP_75", metrics[f"{pfx}map_75"], logger=True, on_step=False, on_epoch=True)
+        pl_module.log(f"{split}/mAP_small", metrics[f"{pfx}map_small"], logger=True, on_step=False, on_epoch=True)
+        pl_module.log(f"{split}/mAP_medium", metrics[f"{pfx}map_medium"], logger=True, on_step=False, on_epoch=True)
+        pl_module.log(f"{split}/mAP_large", metrics[f"{pfx}map_large"], logger=True, on_step=False, on_epoch=True)
         pl_module.log(f"{split}/mAR", metrics[mar_key], logger=True, on_step=False, on_epoch=True)
 
         # Write directly into callback_metrics so ModelCheckpoint / EarlyStopping
@@ -510,6 +517,9 @@ class COCOEvalCallback(Callback):
         trainer.callback_metrics[f"{split}/mAP_50_95"] = metrics[f"{pfx}map"].detach().cpu()
         trainer.callback_metrics[f"{split}/mAP_50"] = metrics[f"{pfx}map_50"].detach().cpu()
         trainer.callback_metrics[f"{split}/mAP_75"] = metrics[f"{pfx}map_75"].detach().cpu()
+        trainer.callback_metrics[f"{split}/mAP_small"] = metrics[f"{pfx}map_small"].detach().cpu()
+        trainer.callback_metrics[f"{split}/mAP_medium"] = metrics[f"{pfx}map_medium"].detach().cpu()
+        trainer.callback_metrics[f"{split}/mAP_large"] = metrics[f"{pfx}map_large"].detach().cpu()
         trainer.callback_metrics[f"{split}/mAR"] = metrics[mar_key].detach().cpu()
 
         # EMA metrics — computed from a separate EMA forward pass accumulated in
@@ -531,9 +541,21 @@ class COCOEvalCallback(Callback):
                 on_epoch=True,
             )
             pl_module.log(f"{split}/ema_mAP_50", ema_metrics[f"{pfx}map_50"], logger=True, on_step=False, on_epoch=True)
+            pl_module.log(
+                f"{split}/ema_mAP_small", ema_metrics[f"{pfx}map_small"], logger=True, on_step=False, on_epoch=True
+            )
+            pl_module.log(
+                f"{split}/ema_mAP_medium", ema_metrics[f"{pfx}map_medium"], logger=True, on_step=False, on_epoch=True
+            )
+            pl_module.log(
+                f"{split}/ema_mAP_large", ema_metrics[f"{pfx}map_large"], logger=True, on_step=False, on_epoch=True
+            )
             pl_module.log(f"{split}/ema_mAR", ema_metrics[mar_key], logger=True, on_step=False, on_epoch=True)
             trainer.callback_metrics[f"{split}/ema_mAP_50_95"] = ema_metrics[f"{pfx}map"].detach().cpu()
             trainer.callback_metrics[f"{split}/ema_mAP_50"] = ema_metrics[f"{pfx}map_50"].detach().cpu()
+            trainer.callback_metrics[f"{split}/ema_mAP_small"] = ema_metrics[f"{pfx}map_small"].detach().cpu()
+            trainer.callback_metrics[f"{split}/ema_mAP_medium"] = ema_metrics[f"{pfx}map_medium"].detach().cpu()
+            trainer.callback_metrics[f"{split}/ema_mAP_large"] = ema_metrics[f"{pfx}map_large"].detach().cpu()
             trainer.callback_metrics[f"{split}/ema_mAR"] = ema_metrics[mar_key].detach().cpu()
             if self._use_segm_metrics:
                 pl_module.log(
