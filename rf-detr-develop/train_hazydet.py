@@ -6,6 +6,7 @@ from visualize_hazydet import generate_representative_visualization
 DATASET_DIR = "/root/autodl-tmp/HazyDet_RFDETR"
 OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_hbs"
 VISUALIZE_AFTER_TRAINING = True
+FIXED_SAMPLE_FILE = "/root/autodl-tmp/rf-detr/output/hazydet_fixed_samples_valid.json"
 
 
 def main():
@@ -48,6 +49,7 @@ def main():
             split="valid",
             confidence_threshold=0.30,
             iou_threshold=0.50,
+            sample_file=FIXED_SAMPLE_FILE,
         )
 
 

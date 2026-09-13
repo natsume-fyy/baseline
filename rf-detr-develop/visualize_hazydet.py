@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -126,7 +127,7 @@ def load_validation_records(dataset_dir: Path, split: str = "valid") -> tuple[li
             annotations_by_image[int(annotation["image_id"])].append(annotation)
 
     records: list[ImageResult] = []
-    for image_info in coco["images"]:
+    for image_info in sorted(coco["images"], key=lambda item: (str(item["file_name"]), int(item["id"]))):
         image_id = int(image_info["id"])
         image_path = split_dir / image_info["file_name"]
         if not image_path.exists():
@@ -229,57 +230,108 @@ def run_inference(records: list[ImageResult], checkpoint: Path, threshold: float
 
 
 def _choose_closest(
-    records: list[ImageResult], attribute: str, target: float, used: set[int], secondary: str | None = None
+    records: list[ImageResult], attribute: str, target: float, used: set[int]
 ) -> int:
-    """Return an unused record closest to a target, with an optional median tie-breaker."""
+    """Return an unused record closest to a dataset-only target."""
     available = [index for index in range(len(records)) if index not in used]
     if not available:
         raise ValueError("Not enough distinct images to fill all representative slots.")
-    secondary_target = float(np.median([getattr(record, secondary) for record in records])) if secondary else 0.0
     return min(
         available,
         key=lambda index: (
             abs(float(getattr(records[index], attribute)) - target),
-            abs(float(getattr(records[index], secondary)) - secondary_target) if secondary else 0.0,
+            record_sort_key(records[index]),
         ),
     )
 
 
+def record_sort_key(record: ImageResult) -> tuple[str, int]:
+    """Provide a stable tie-breaker independent of COCO JSON ordering."""
+    return (record.path.name, record.image_id)
+
+
 def select_representatives(records: list[ImageResult]) -> list[tuple[str, ImageResult]]:
-    """Select nine distinct images covering conditions, difficulty, and failures."""
+    """Select nine distinct images using only image and GT properties."""
     if len(records) < 9:
         raise ValueError("At least nine validation images are required for a 3 x 3 representative grid.")
 
     selected: list[tuple[str, int]] = []
     used: set[int] = set()
 
-    def add_closest(title: str, attribute: str, quantile: float, secondary: str | None = None) -> None:
+    def add_closest(title: str, attribute: str, quantile: float) -> None:
         values = np.asarray([getattr(record, attribute) for record in records], dtype=float)
-        index = _choose_closest(records, attribute, float(np.quantile(values, quantile)), used, secondary)
+        index = _choose_closest(records, attribute, float(np.quantile(values, quantile)), used)
         selected.append((title, index))
         used.add(index)
 
-    add_closest("Light haze", "haze_score", 0.10, "f1")
-    add_closest("Moderate haze", "haze_score", 0.50, "f1")
-    add_closest("Heavy haze", "haze_score", 0.90, "f1")
-    add_closest("Sparse scene", "object_count", 0.10, "f1")
-    add_closest("Dense scene", "object_count", 0.90, "f1")
-    add_closest("Small objects", "small_ratio", 0.90, "f1")
-
-    available = [index for index in range(len(records)) if index not in used]
-    success = max(available, key=lambda index: (records[index].f1, records[index].tp))
-    selected.append(("Typical success", success))
-    used.add(success)
-
-    available = [index for index in range(len(records)) if index not in used]
-    missed = max(available, key=lambda index: (records[index].fn, -records[index].f1))
-    selected.append(("Miss-heavy case", missed))
-    used.add(missed)
-
-    available = [index for index in range(len(records)) if index not in used]
-    false_alarm = max(available, key=lambda index: (records[index].fp, -records[index].precision))
-    selected.append(("False-alarm case", false_alarm))
+    add_closest("Light haze", "haze_score", 0.10)
+    add_closest("Moderate haze", "haze_score", 0.50)
+    add_closest("Heavy haze", "haze_score", 0.90)
+    add_closest("Sparse scene", "object_count", 0.10)
+    add_closest("Typical density", "object_count", 0.50)
+    add_closest("Dense scene", "object_count", 0.90)
+    add_closest("Few small objects", "small_ratio", 0.10)
+    add_closest("Mixed object sizes", "small_ratio", 0.50)
+    add_closest("Many small objects", "small_ratio", 0.90)
     return [(title, records[index]) for title, index in selected]
+
+
+def _sha256(path: Path) -> str:
+    """Hash one selected image to detect content changes between experiments."""
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_or_create_fixed_selection(
+    records: list[ImageResult], sample_file: Path, split: str
+) -> list[tuple[str, ImageResult]]:
+    """Persist panel IDs once, then reuse and validate the exact same image files."""
+    if sample_file.exists():
+        with sample_file.open("r", encoding="utf-8") as file:
+            manifest = json.load(file)
+        if manifest.get("version") != 1 or manifest.get("split") != split:
+            raise ValueError(f"Fixed-sample manifest has a different version or split: {sample_file}")
+        panels = manifest.get("panels")
+        if not isinstance(panels, list) or len(panels) != 9:
+            raise ValueError(f"Fixed-sample manifest must contain exactly nine panels: {sample_file}")
+        by_id = {record.image_id: record for record in records}
+        selected: list[tuple[str, ImageResult]] = []
+        used: set[int] = set()
+        for panel in panels:
+            image_id = int(panel["image_id"])
+            record = by_id.get(image_id)
+            if record is None or record.path.name != panel["file_name"] or _sha256(record.path) != panel["sha256"]:
+                raise ValueError(f"A fixed image is missing or changed (image_id={image_id}): {sample_file}")
+            if image_id in used:
+                raise ValueError(f"Fixed-sample manifest contains a duplicate image_id={image_id}: {sample_file}")
+            selected.append((str(panel["reason"]), record))
+            used.add(image_id)
+        print(f"Reusing fixed images from: {sample_file}")
+        return selected
+
+    selected = select_representatives(records)
+    manifest = {
+        "version": 1,
+        "split": split,
+        "panels": [
+            {
+                "reason": reason,
+                "image_id": record.image_id,
+                "file_name": record.path.name,
+                "sha256": _sha256(record.path),
+            }
+            for reason, record in selected
+        ],
+    }
+    sample_file.parent.mkdir(parents=True, exist_ok=True)
+    with sample_file.open("x", encoding="utf-8") as file:
+        json.dump(manifest, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+    print(f"Fixed image list created: {sample_file}")
+    return selected
 
 
 def _draw_box(axis: Any, box: np.ndarray, color: str, linestyle: str, label: str) -> None:
@@ -359,13 +411,14 @@ def save_visualizations(
     with (output_dir / "representative_samples.csv").open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.writer(file)
         writer.writerow(
-            ["panel", "reason", "image", "haze_score", "objects", "small_ratio", "tp", "fp", "fn", "f1", "mean_iou"]
+            ["panel", "reason", "image_id", "image", "haze_score", "objects", "small_ratio", "tp", "fp", "fn", "f1", "mean_iou"]
         )
         for panel, (reason, record) in enumerate(selected, start=1):
             writer.writerow(
                 [
                     panel,
                     reason,
+                    record.image_id,
                     record.path.name,
                     f"{record.haze_score:.6f}",
                     record.object_count,
@@ -386,6 +439,7 @@ def generate_representative_visualization(
     split: str = "valid",
     confidence_threshold: float = 0.30,
     iou_threshold: float = 0.50,
+    sample_file: str | Path | None = None,
 ) -> None:
     """Run the complete representative-sample visualization pipeline.
 
@@ -396,10 +450,13 @@ def generate_representative_visualization(
         split: Dataset split to analyze.
         confidence_threshold: Prediction confidence threshold.
         iou_threshold: Same-class IoU threshold used to define a true positive.
+        sample_file: Shared JSON manifest. Defaults to one file in the dataset root.
     """
-    records, label_to_name = load_validation_records(Path(dataset_dir), split)
+    dataset_dir = Path(dataset_dir)
+    records, label_to_name = load_validation_records(dataset_dir, split)
+    fixed_file = Path(sample_file) if sample_file is not None else dataset_dir / f"fixed_samples_{split}.json"
+    selected = load_or_create_fixed_selection(records, fixed_file, split)
     run_inference(records, Path(checkpoint), confidence_threshold, iou_threshold)
-    selected = select_representatives(records)
     save_visualizations(records, selected, label_to_name, Path(output_dir))
     print(f"Representative visualizations saved to: {output_dir}")
 
@@ -413,6 +470,7 @@ def main() -> None:
     parser.add_argument("--split", default="valid")
     parser.add_argument("--confidence", type=float, default=0.30)
     parser.add_argument("--iou", type=float, default=0.50)
+    parser.add_argument("--sample-file", type=Path, help="Shared fixed-image JSON manifest")
     args = parser.parse_args()
     generate_representative_visualization(
         dataset_dir=args.dataset_dir,
@@ -421,6 +479,7 @@ def main() -> None:
         split=args.split,
         confidence_threshold=args.confidence,
         iou_threshold=args.iou,
+        sample_file=args.sample_file,
     )
 
 
