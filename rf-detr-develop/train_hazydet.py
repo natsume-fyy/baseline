@@ -4,19 +4,15 @@ from visualize_hazydet import generate_representative_visualization
 
 
 DATASET_DIR = "/root/autodl-tmp/HazyDet_RFDETR"
-OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_hbs_frequency"
+OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_dynamic_frequency"
 VISUALIZE_AFTER_TRAINING = True
 FIXED_SAMPLE_FILE = "/root/autodl-tmp/rf-detr/output/hazydet_fixed_samples_valid.json"
 
 
 def main():
 
-    # model = RFDETRSmall()
     model = RFDETRSmall(
-        hbs_enabled=True,
-        hbs_reduction=4,
-        foreground_frequency_enabled=True,
-        foreground_frequency_reduction=4,
+        dynamic_frequency_enabled=True,
     )
 
     model.train(
@@ -29,9 +25,6 @@ def main():
         grad_accum_steps=4,
 
         lr=1e-3,
-
-        hbs_loss_coef=0.25,
-        foreground_frequency_loss_coef=0.1,
 
         device="cuda",
 

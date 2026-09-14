@@ -116,19 +116,19 @@ class TestBuildModelCharacterization:
         assert model.hbs is not None
         assert len(model.hbs.denoisers) == len(mc.projector_scale)
 
-    def test_foreground_frequency_enabled_builds_refiner(self) -> None:
+    def test_dynamic_frequency_enabled_builds_refiner(self) -> None:
         """The configured refiner must cover each projected feature scale."""
         mc = RFDETRBaseConfig(
             num_classes=80,
             pretrain_weights=None,
             device="cpu",
-            foreground_frequency_enabled=True,
+            dynamic_frequency_enabled=True,
         )
 
         model = build_model(_make_ns(mc=mc))
 
-        assert model.foreground_frequency is not None
-        assert len(model.foreground_frequency.frequency_gates) == len(mc.projector_scale)
+        assert model.dynamic_frequency is not None
+        assert len(model.dynamic_frequency.gates) == len(mc.projector_scale)
 
     def test_num_feature_levels_set_on_args(self) -> None:
         """build_model mutates args.num_feature_levels = len(projector_scale)."""
