@@ -43,6 +43,7 @@ from rfdetr.models.criterion import (  # noqa: F401 — backward compat
     sigmoid_varifocal_loss,
 )
 from rfdetr.models.heads.segmentation import SegmentationHead
+from rfdetr.models.foreground_frequency import ForegroundFrequencyRefiner
 from rfdetr.models.hbs import HBS
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
@@ -135,6 +136,8 @@ class LWDETR(nn.Module):
         hbs_enabled: bool = False,
         hbs_reduction: int = 4,
         hbs_kernel_sizes: list[int] | None = None,
+        foreground_frequency_enabled: bool = False,
+        foreground_frequency_reduction: int = 4,
     ):
         """Initializes the model.
 
@@ -170,6 +173,15 @@ class LWDETR(nn.Module):
                 reduction=hbs_reduction,
             )
             if hbs_enabled
+            else None
+        )
+        self.foreground_frequency = (
+            ForegroundFrequencyRefiner(
+                channels=hidden_dim,
+                levels=len(hbs_kernel_sizes or [3]),
+                reduction=foreground_frequency_reduction,
+            )
+            if foreground_frequency_enabled
             else None
         )
 
@@ -477,7 +489,57 @@ class LWDETR(nn.Module):
             samples = nested_tensor_from_tensor_list(samples)
         features, poss, cross_attn_features = self.backbone(samples)
 
+        if self.foreground_frequency is not None:
+            refined, foreground_logits = self.foreground_frequency(
+                [feature.tensors for feature in features],
+                [feature.mask for feature in features],
+            )
+            features = [NestedTensor(tensor, feature.mask) for tensor, feature in zip(refined, features)]
+            if cross_attn_features is not None:
+                refined_cross, _ = self.foreground_frequency(
+                    [feature.tensors for feature in cross_attn_features],
+                    [feature.mask for feature in cross_attn_features],
+                )
+                cross_attn_features = [
+                    NestedTensor(tensor, feature.mask)
+                    for tensor, feature in zip(refined_cross, cross_attn_features)
+                ]
+
         out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
+        if self.training and self.foreground_frequency is not None and targets is not None:
+            foreground_losses = []
+            for logits, feature in zip(foreground_logits, features):
+                padding_mask = feature.mask
+                height, width = logits.shape[-2:]
+                masks = torch.stack(
+                    [
+                        HBS._foreground_mask(
+                            target["boxes"],
+                            height,
+                            width,
+                            valid_height=(
+                                int((~padding_mask[i]).any(dim=1).sum().item())
+                                if padding_mask is not None else None
+                            ),
+                            valid_width=(
+                                int((~padding_mask[i]).any(dim=0).sum().item())
+                                if padding_mask is not None else None
+                            ),
+                            dtype=logits.dtype,
+                            device=logits.device,
+                        )
+                        for i, target in enumerate(targets)
+                    ]
+                )
+                valid = (~padding_mask).unsqueeze(1) if padding_mask is not None else torch.ones_like(masks)
+                positive = (masks * valid).sum()
+                negative = valid.sum() - positive
+                positive_weight = (negative / positive.clamp_min(1)).clamp(min=1, max=10)
+                pixel_loss = nn.functional.binary_cross_entropy_with_logits(
+                    logits, masks, pos_weight=positive_weight, reduction="none"
+                )
+                foreground_losses.append((pixel_loss * valid).sum() / valid.sum().clamp_min(1))
+            out["loss_foreground_frequency"] = torch.stack(foreground_losses).mean()
         if self.training and self.hbs is not None and targets is not None:
             hbs_tensors = self.hbs(
                 [feature.tensors for feature in features],
@@ -889,6 +951,8 @@ def build_model(args: "BuilderArgs"):
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
         hbs_enabled=getattr(args, "hbs_enabled", False),
         hbs_reduction=getattr(args, "hbs_reduction", 4),
+        foreground_frequency_enabled=getattr(args, "foreground_frequency_enabled", False),
+        foreground_frequency_reduction=getattr(args, "foreground_frequency_reduction", 4),
         hbs_kernel_sizes=[
             (int(math.log2({"P3": 8, "P4": 16, "P5": 32, "P6": 64}[level])) // 2 * 2) + 1
             for level in args.projector_scale
@@ -924,6 +988,8 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
     if getattr(args, "hbs_enabled", False):
         hbs_loss_coef = getattr(args, "hbs_loss_coef", 0.25)
         weight_dict.update({f"{key}_hbs": value * hbs_loss_coef for key, value in tuple(weight_dict.items())})
+    if getattr(args, "foreground_frequency_enabled", False):
+        weight_dict["loss_foreground_frequency"] = getattr(args, "foreground_frequency_loss_coef", 0.1)
 
     losses = ["labels", "boxes", "cardinality"]
     if args.segmentation_head:

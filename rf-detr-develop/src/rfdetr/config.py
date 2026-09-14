@@ -520,6 +520,8 @@ class ModelConfig(BaseConfig):
     dual_projector_kp_only: bool = False
     hbs_enabled: bool = False
     hbs_reduction: int = Field(default=4, ge=1)
+    foreground_frequency_enabled: bool = False
+    foreground_frequency_reduction: int = Field(default=4, ge=1)
     num_keypoints_per_class: list[int] = Field(default_factory=list)
     num_decoder_registers: int = 0
     mask_downsample_ratio: int = 4
@@ -1057,6 +1059,7 @@ class TrainConfig(BaseConfig):
     drop_path: float = 0.0
     cls_loss_coef: float = 1.0
     hbs_loss_coef: float = Field(default=0.25, ge=0.0)
+    foreground_frequency_loss_coef: float = Field(default=0.1, ge=0.0)
     # Detection-vs-keypoint distinction is derived by callers via `include_keypoints`, not
     # stored on this field. See rfdetr.datasets.transforms.AlbumentationsWrapper.from_config
     # for the None/[]/[...] tri-state contract applied at the augmentation-pipeline boundary.

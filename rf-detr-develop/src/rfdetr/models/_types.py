@@ -64,6 +64,8 @@ class BuilderArgs(Protocol):
     group_detr: int
     hbs_enabled: bool
     hbs_reduction: int
+    foreground_frequency_enabled: bool
+    foreground_frequency_reduction: int
     gradient_checkpointing: bool
     positional_encoding_size: int
     ia_bce_loss: bool
@@ -93,6 +95,7 @@ class BuilderArgs(Protocol):
     aux_loss: bool
     focal_alpha: float
     hbs_loss_coef: float
+    foreground_frequency_loss_coef: float
     bbox_loss_coef: float
     giou_loss_coef: float
     set_cost_class: float

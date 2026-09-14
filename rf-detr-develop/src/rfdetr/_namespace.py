@@ -33,6 +33,8 @@ _MC_NAMESPACE_FIELDS = {
     "group_detr",
     "hbs_enabled",
     "hbs_reduction",
+    "foreground_frequency_enabled",
+    "foreground_frequency_reduction",
     "hidden_dim",
     "ia_bce_loss",
     "layer_norm",
