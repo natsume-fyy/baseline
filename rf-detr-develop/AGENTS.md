@@ -209,7 +209,7 @@ uv run twine check --strict dist/*
 
 - RFDETR wrappers: `self.model` is the model context returned by `get_model()`
 - Underlying PyTorch module: `self.model.model`
-- Optional `dynamic_frequency_enabled` refines projected features in training and inference by predicting one low-pass blend and two frequency gains per image and feature level. The gains initialize to one and add no auxiliary loss; HBS remains a separate, optional training-only branch.
+- Optional `dynamic_frequency_enabled` runs in parallel with the unmodified projected feature path. Each level fuses original and frequency-refined features at equal weight before the detection head. Frequency gains initialize to one, so the fusion starts as an identity and adds no auxiliary loss; HBS remains a separate, optional training-only branch.
 - Segmentation models return `pred_masks` as `torch.Tensor` or dict with keys `['spatial_features', 'query_features', 'bias']`
 
 **Imports:**

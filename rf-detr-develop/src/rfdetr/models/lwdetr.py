@@ -488,19 +488,23 @@ class LWDETR(nn.Module):
         features, poss, cross_attn_features = self.backbone(samples)
 
         if self.dynamic_frequency is not None:
-            refined = self.dynamic_frequency(
+            frequency_features = self.dynamic_frequency(
                 [feature.tensors for feature in features],
                 [feature.mask for feature in features],
             )
-            features = [NestedTensor(tensor, feature.mask) for tensor, feature in zip(refined, features)]
+            # Keep the original projected path in parallel with frequency refinement.
+            features = [
+                NestedTensor(torch.lerp(feature.tensors, frequency, 0.5), feature.mask)
+                for feature, frequency in zip(features, frequency_features)
+            ]
             if cross_attn_features is not None:
-                refined_cross = self.dynamic_frequency(
+                frequency_cross = self.dynamic_frequency(
                     [feature.tensors for feature in cross_attn_features],
                     [feature.mask for feature in cross_attn_features],
                 )
                 cross_attn_features = [
-                    NestedTensor(tensor, feature.mask)
-                    for tensor, feature in zip(refined_cross, cross_attn_features)
+                    NestedTensor(torch.lerp(feature.tensors, frequency, 0.5), feature.mask)
+                    for feature, frequency in zip(cross_attn_features, frequency_cross)
                 ]
 
         out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
