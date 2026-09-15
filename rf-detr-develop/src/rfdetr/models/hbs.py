@@ -57,7 +57,7 @@ class BackgroundSmoothingBlock(nn.Module):
 
 
 class HBS(nn.Module):
-    """Apply scale-adaptive smoothing only outside ground-truth boxes.
+    """Apply contrast-gated smoothing only outside ground-truth boxes.
 
     RF-DETR targets store boxes as normalized ``(cx, cy, width, height)`` coordinates. A foreground mask is rasterized
     independently at each feature level, which is equivalent to SET's full-resolution mask followed by nearest-neighbor
@@ -79,6 +79,34 @@ class HBS(nn.Module):
                 for kernel_size in kernel_sizes
             ]
         )
+        # A single shared gate learns which background contrast range benefits from HBS.
+        # The quadratic term permits a peak at intermediate contrast rather than forcing
+        # all low- or high-contrast images to receive the strongest smoothing.
+        self.contrast_gate = nn.Linear(2, 1)
+        with torch.no_grad():
+            self.contrast_gate.weight.copy_(torch.tensor([[16.0, -16.0]]))
+            self.contrast_gate.bias.fill_(-3.0)
+
+    def _background_gate(self, feature: torch.Tensor, background_mask: torch.Tensor) -> torch.Tensor:
+        """Return one contrast-based smoothing strength per image.
+
+        Args:
+            feature: Projected feature map with shape ``(B, C, H, W)``.
+            background_mask: Mask of valid background positions with shape ``(B, 1, H, W)``.
+
+        Returns:
+            Gate strengths with shape ``(B, 1, 1, 1)``.
+        """
+        values = feature.float()
+        mask = background_mask.float()
+        count = mask.sum(dim=(-2, -1), keepdim=True).clamp_min(1)
+        mean = (values * mask).sum(dim=(-2, -1), keepdim=True) / count
+        variance = ((values - mean).square() * mask).sum(dim=(-2, -1), keepdim=True) / count
+        energy = (values.square() * mask).sum(dim=(-2, -1), keepdim=True) / count
+        contrast = (variance.mean(dim=1, keepdim=True) / energy.mean(dim=1, keepdim=True).clamp_min(1e-6)).sqrt()
+        contrast = contrast.clamp(0, 1).flatten(start_dim=1)
+        gate_input = torch.stack((contrast[:, 0], contrast[:, 0].square()), dim=1)
+        return self.contrast_gate(gate_input).sigmoid().view(-1, 1, 1, 1).to(dtype=feature.dtype)
 
     @staticmethod
     def _foreground_mask(
@@ -195,5 +223,6 @@ class HBS(nn.Module):
                 foreground_mask = foreground_mask * valid_mask
             background_mask = valid_mask - foreground_mask
             smoothed_background = denoiser(feature * background_mask)
-            outputs.append(smoothed_background * background_mask + feature * (1 - background_mask))
+            gate = self._background_gate(feature, background_mask)
+            outputs.append(feature + gate * background_mask * (smoothed_background - feature))
         return outputs
