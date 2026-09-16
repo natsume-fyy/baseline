@@ -42,8 +42,8 @@ from rfdetr.models.criterion import (  # noqa: F401 — backward compat
     sigmoid_focal_loss,
     sigmoid_varifocal_loss,
 )
+from rfdetr.models.eca import ECAAttention
 from rfdetr.models.heads.segmentation import SegmentationHead
-from rfdetr.models.hbs import HBS
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
 from rfdetr.models.postprocess import PostProcess
@@ -132,9 +132,7 @@ class LWDETR(nn.Module):
         use_grouppose_keypoints=False,
         num_keypoints_per_class: list[int] | None = None,
         grouppose_keypoint_dim_downscale: int = 1,
-        hbs_enabled: bool = False,
-        hbs_reduction: int = 4,
-        hbs_kernel_sizes: list[int] | None = None,
+        p4_feature_index: int | None = None,
     ):
         """Initializes the model.
 
@@ -163,15 +161,8 @@ class LWDETR(nn.Module):
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.group_detr = group_detr
-        self.hbs = (
-            HBS(
-                channels=hidden_dim,
-                kernel_sizes=hbs_kernel_sizes or [3],
-                reduction=hbs_reduction,
-            )
-            if hbs_enabled
-            else None
-        )
+        self.p4_feature_index = p4_feature_index
+        self.p4_eca = ECAAttention(hidden_dim) if p4_feature_index is not None else None
 
         # iter update
         self.lite_refpoint_refine = lite_refpoint_refine
@@ -476,35 +467,25 @@ class LWDETR(nn.Module):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
         features, poss, cross_attn_features = self.backbone(samples)
+        features = self._apply_p4_eca(features)
+        cross_attn_features = self._apply_p4_eca(cross_attn_features)
+        return self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
 
-        out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
-        if self.training and self.hbs is not None and targets is not None:
-            hbs_tensors = self.hbs(
-                [feature.tensors for feature in features],
-                targets,
-                [feature.mask for feature in features],
-            )
-            hbs_features = [
-                NestedTensor(hbs_tensor, feature.mask) for hbs_tensor, feature in zip(hbs_tensors, features)
-            ]
-            hbs_cross_attn_features = None
-            if cross_attn_features is not None:
-                hbs_cross_attn_tensors = self.hbs(
-                    [feature.tensors for feature in cross_attn_features],
-                    targets,
-                    [feature.mask for feature in cross_attn_features],
-                )
-                hbs_cross_attn_features = [
-                    NestedTensor(hbs_tensor, feature.mask)
-                    for hbs_tensor, feature in zip(hbs_cross_attn_tensors, cross_attn_features)
-                ]
-            out["hbs_outputs"] = self._forward_from_backbone_features(
-                samples,
-                hbs_features,
-                poss,
-                hbs_cross_attn_features,
-            )
-        return out
+    def _apply_p4_eca(self, features: list[NestedTensor] | None) -> list[NestedTensor] | None:
+        """Apply ECA to P4 while retaining its padding mask.
+
+        Args:
+            features: Projected backbone feature levels.
+
+        Returns:
+            Feature levels with attention applied only to P4.
+        """
+        if features is None or self.p4_eca is None or self.p4_feature_index is None:
+            return features
+        outputs = list(features)
+        p4 = outputs[self.p4_feature_index]
+        outputs[self.p4_feature_index] = NestedTensor(self.p4_eca(p4.tensors, p4.mask), p4.mask)
+        return outputs
 
     def _forward_from_backbone_features(
         self,
@@ -513,7 +494,7 @@ class LWDETR(nn.Module):
         poss: list[torch.Tensor],
         cross_attn_features: list[NestedTensor] | None,
     ) -> dict[str, torch.Tensor]:
-        """Run the shared DETR head on normal or HBS-smoothed backbone features.
+        """Run the DETR head on projected backbone features.
 
         Args:
             samples: Input batch and padding mask.
@@ -662,7 +643,16 @@ class LWDETR(nn.Module):
         return out
 
     def forward_export(self, tensors):
-        srcs, _, poss, cross_attn_srcs = self.backbone(tensors)
+        srcs, masks, poss, cross_attn_srcs = self.backbone(tensors)
+        if self.p4_eca is not None and self.p4_feature_index is not None:
+            srcs = list(srcs)
+            p4_mask = masks[self.p4_feature_index]
+            srcs[self.p4_feature_index] = self.p4_eca(srcs[self.p4_feature_index], p4_mask)
+            if cross_attn_srcs is not None:
+                cross_attn_srcs = list(cross_attn_srcs)
+                cross_attn_srcs[self.p4_feature_index] = self.p4_eca(
+                    cross_attn_srcs[self.p4_feature_index], p4_mask
+                )
         # only use one group in inference
         refpoint_embed_weight = self.refpoint_embed.weight[: self.num_queries]
         query_feat_weight = self.query_feat.weight[: self.num_queries]
@@ -887,12 +877,7 @@ def build_model(args: "BuilderArgs"):
         use_grouppose_keypoints=getattr(args, "use_grouppose_keypoints", False),
         num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
-        hbs_enabled=getattr(args, "hbs_enabled", False),
-        hbs_reduction=getattr(args, "hbs_reduction", 4),
-        hbs_kernel_sizes=[
-            (int(math.log2({"P3": 8, "P4": 16, "P5": 32, "P6": 64}[level])) // 2 * 2) + 1
-            for level in args.projector_scale
-        ],
+        p4_feature_index=args.projector_scale.index("P4") if "P4" in args.projector_scale else None,
     )
     return model
 
@@ -920,10 +905,6 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
         if args.two_stage:
             aux_weight_dict.update({k + "_enc": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
-
-    if getattr(args, "hbs_enabled", False):
-        hbs_loss_coef = getattr(args, "hbs_loss_coef", 0.25)
-        weight_dict.update({f"{key}_hbs": value * hbs_loss_coef for key, value in tuple(weight_dict.items())})
 
     losses = ["labels", "boxes", "cardinality"]
     if args.segmentation_head:

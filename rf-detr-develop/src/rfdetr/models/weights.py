@@ -136,6 +136,7 @@ def _filter_intentional_keys(keys: list[str]) -> list[str]:
         *_QUERY_PARAM_SUFFIXES,
         "enc_out_class_embed.",
         "enc_out_bbox_embed.",
+        "p4_eca.",
     )
 
     def _is_intentional(key: str) -> bool:

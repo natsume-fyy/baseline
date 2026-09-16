@@ -62,8 +62,6 @@ class BuilderArgs(Protocol):
     device: str
     resolution: int
     group_detr: int
-    hbs_enabled: bool
-    hbs_reduction: int
     gradient_checkpointing: bool
     positional_encoding_size: int
     ia_bce_loss: bool
@@ -92,7 +90,6 @@ class BuilderArgs(Protocol):
     # mislead consumers into thinking they must be supplied.
     aux_loss: bool
     focal_alpha: float
-    hbs_loss_coef: float
     bbox_loss_coef: float
     giou_loss_coef: float
     set_cost_class: float
