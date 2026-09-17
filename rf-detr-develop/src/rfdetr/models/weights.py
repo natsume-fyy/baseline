@@ -137,6 +137,7 @@ def _filter_intentional_keys(keys: list[str]) -> list[str]:
         "enc_out_class_embed.",
         "enc_out_bbox_embed.",
         "p4_eca.",
+        "head_eca.",
     )
 
     def _is_intentional(key: str) -> bool:

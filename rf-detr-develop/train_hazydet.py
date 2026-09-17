@@ -4,7 +4,7 @@ from visualize_hazydet import generate_representative_visualization
 
 
 DATASET_DIR = "/root/autodl-tmp/HazyDet_RFDETR"
-OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_eca"
+OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_head_eca"
 VISUALIZE_AFTER_TRAINING = True
 FIXED_SAMPLE_FILE = "/root/autodl-tmp/rf-detr/output/hazydet_fixed_samples_valid.json"
 

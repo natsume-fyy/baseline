@@ -53,3 +53,42 @@ class ECAAttention(nn.Module):
         descriptor = descriptor.unsqueeze(1)
         weights = self.channel_conv(descriptor).sigmoid().squeeze(1).unsqueeze(-1).unsqueeze(-1)
         return features * (2 * weights)
+
+
+class QueryECAAttention(nn.Module):
+    """Apply ECA to decoder query features before the prediction heads.
+
+    The input is expected to use the last two dimensions for queries and
+    channels, respectively. Any leading dimensions, such as decoder layer and
+    batch dimensions, are preserved.
+
+    Args:
+        channels: Width of each decoder query.
+        gamma: Kernel-size adaptation factor.
+        bias: Kernel-size adaptation offset.
+    """
+
+    def __init__(self, channels: int, gamma: int = 2, bias: int = 1) -> None:
+        super().__init__()
+        if channels <= 0:
+            raise ValueError(f"channels must be positive, got {channels}.")
+        kernel_size = int(abs((math.log2(channels) + bias) / gamma))
+        kernel_size = kernel_size if kernel_size % 2 else kernel_size + 1
+        kernel_size = max(kernel_size, 1)
+        self.channel_conv = nn.Conv1d(1, 1, kernel_size, padding=kernel_size // 2, bias=False)
+        nn.init.zeros_(self.channel_conv.weight)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """Reweight a ``(..., num_queries, channels)`` decoder tensor.
+
+        Args:
+            features: Transformer decoder query features.
+
+        Returns:
+            Query features with the same shape and dtype as the input.
+        """
+        descriptor = features.mean(dim=-2)
+        flat_descriptor = descriptor.reshape(-1, 1, descriptor.shape[-1])
+        weights = self.channel_conv(flat_descriptor).sigmoid()
+        weights = weights.reshape(*descriptor.shape).unsqueeze(-2)
+        return features * (2 * weights)

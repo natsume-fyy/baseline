@@ -101,14 +101,13 @@ class TestBuildModelCharacterization:
         model = build_model(ns)
         assert model.group_detr == mc.group_detr
 
-    def test_p4_eca_is_built_for_p4_projector_level(self) -> None:
-        """The model should attach ECA to the projected P4 level."""
+    def test_head_eca_is_built_for_p4_model(self) -> None:
+        """The model should attach ECA after the decoder instead of to P4."""
         mc = RFDETRBaseConfig(num_classes=80, pretrain_weights=None, device="cpu")
 
         model = build_model(_make_ns(mc=mc))
 
-        assert model.p4_feature_index == mc.projector_scale.index("P4")
-        assert model.p4_eca is not None
+        assert model.head_eca is not None
 
     def test_num_feature_levels_set_on_args(self) -> None:
         """build_model mutates args.num_feature_levels = len(projector_scale)."""
