@@ -4,13 +4,14 @@
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 """Select and visualize representative HazyDet validation predictions."""
-
+# visualize_hazydet.py
 from __future__ import annotations
 
 import argparse
 import csv
 import hashlib
 import json
+import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -250,19 +251,30 @@ def record_sort_key(record: ImageResult) -> tuple[str, int]:
     return (record.path.name, record.image_id)
 
 
-def select_representatives(records: list[ImageResult]) -> list[tuple[str, ImageResult]]:
-    """Select nine distinct images using only image and GT properties."""
-    if len(records) < 9:
-        raise ValueError("At least nine validation images are required for a 3 x 3 representative grid.")
+def select_representatives(
+    records: list[ImageResult], samples_per_group: int = 1
+) -> list[tuple[str, ImageResult]]:
+    """Select distinct images for nine representative groups using image and GT properties."""
+    if samples_per_group < 1:
+        raise ValueError("samples_per_group must be at least 1.")
+    required = 9 * samples_per_group
+    if len(records) < required:
+        raise ValueError(
+            f"At least {required} validation images are required for "
+            f"{samples_per_group} sample(s) in each of the nine representative groups."
+        )
 
     selected: list[tuple[str, int]] = []
     used: set[int] = set()
 
     def add_closest(title: str, attribute: str, quantile: float) -> None:
         values = np.asarray([getattr(record, attribute) for record in records], dtype=float)
-        index = _choose_closest(records, attribute, float(np.quantile(values, quantile)), used)
-        selected.append((title, index))
-        used.add(index)
+        target = float(np.quantile(values, quantile))
+        for sample_number in range(1, samples_per_group + 1):
+            index = _choose_closest(records, attribute, target, used)
+            panel_title = title if samples_per_group == 1 else f"{title} ({sample_number}/{samples_per_group})"
+            selected.append((panel_title, index))
+            used.add(index)
 
     add_closest("Light haze", "haze_score", 0.10)
     add_closest("Moderate haze", "haze_score", 0.50)
@@ -286,17 +298,26 @@ def _sha256(path: Path) -> str:
 
 
 def load_or_create_fixed_selection(
-    records: list[ImageResult], sample_file: Path, split: str
+    records: list[ImageResult], sample_file: Path, split: str, samples_per_group: int = 1
 ) -> list[tuple[str, ImageResult]]:
     """Persist panel IDs once, then reuse and validate the exact same image files."""
+    if samples_per_group < 1:
+        raise ValueError("samples_per_group must be at least 1.")
+    expected_panels = 9 * samples_per_group
     if sample_file.exists():
         with sample_file.open("r", encoding="utf-8") as file:
             manifest = json.load(file)
-        if manifest.get("version") != 1 or manifest.get("split") != split:
+        version = manifest.get("version")
+        if version not in (1, 2) or manifest.get("split") != split:
             raise ValueError(f"Fixed-sample manifest has a different version or split: {sample_file}")
         panels = manifest.get("panels")
-        if not isinstance(panels, list) or len(panels) != 9:
-            raise ValueError(f"Fixed-sample manifest must contain exactly nine panels: {sample_file}")
+        manifest_samples = 1 if version == 1 else manifest.get("samples_per_group")
+        if manifest_samples != samples_per_group or not isinstance(panels, list) or len(panels) != expected_panels:
+            raise ValueError(
+                f"Fixed-sample manifest does not match samples_per_group={samples_per_group} "
+                f"({expected_panels} panels expected). Use a different --sample-file or remove the old manifest: "
+                f"{sample_file}"
+            )
         by_id = {record.image_id: record for record in records}
         selected: list[tuple[str, ImageResult]] = []
         used: set[int] = set()
@@ -312,10 +333,11 @@ def load_or_create_fixed_selection(
         print(f"Reusing fixed images from: {sample_file}")
         return selected
 
-    selected = select_representatives(records)
+    selected = select_representatives(records, samples_per_group)
     manifest = {
-        "version": 1,
+        "version": 2,
         "split": split,
+        "samples_per_group": samples_per_group,
         "panels": [
             {
                 "reason": reason,
@@ -358,8 +380,11 @@ def save_visualizations(
 ) -> None:
     """Save the representative grid, distribution plot, and selection table."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(3, 3, figsize=(12, 9), constrained_layout=True)
-    for axis, (title, record) in zip(axes.flat, selected):
+    columns = 3
+    rows = math.ceil(len(selected) / columns)
+    fig, axes = plt.subplots(rows, columns, figsize=(12, 3 * rows), constrained_layout=True)
+    flat_axes = np.atleast_1d(axes).flat
+    for axis, (title, record) in zip(flat_axes, selected):
         with Image.open(record.path) as image:
             axis.imshow(image.convert("RGB"))
 
@@ -383,6 +408,9 @@ def save_visualizations(
             f"TP={record.tp}  FP={record.fp}  FN={record.fn}  F1={record.f1:.2f}",
             fontsize=8,
         )
+        axis.axis("off")
+
+    for axis in flat_axes:
         axis.axis("off")
 
     fig.suptitle("Representative HazyDet validation examples", fontsize=12)
@@ -440,6 +468,7 @@ def generate_representative_visualization(
     confidence_threshold: float = 0.30,
     iou_threshold: float = 0.50,
     sample_file: str | Path | None = None,
+    samples_per_group: int = 1,
 ) -> None:
     """Run the complete representative-sample visualization pipeline.
 
@@ -451,11 +480,12 @@ def generate_representative_visualization(
         confidence_threshold: Prediction confidence threshold.
         iou_threshold: Same-class IoU threshold used to define a true positive.
         sample_file: Shared JSON manifest. Defaults to one file in the dataset root.
+        samples_per_group: Number of images selected for each of the nine representative groups.
     """
     dataset_dir = Path(dataset_dir)
     records, label_to_name = load_validation_records(dataset_dir, split)
     fixed_file = Path(sample_file) if sample_file is not None else dataset_dir / f"fixed_samples_{split}.json"
-    selected = load_or_create_fixed_selection(records, fixed_file, split)
+    selected = load_or_create_fixed_selection(records, fixed_file, split, samples_per_group)
     run_inference(records, Path(checkpoint), confidence_threshold, iou_threshold)
     save_visualizations(records, selected, label_to_name, Path(output_dir))
     print(f"Representative visualizations saved to: {output_dir}")
@@ -471,6 +501,12 @@ def main() -> None:
     parser.add_argument("--confidence", type=float, default=0.30)
     parser.add_argument("--iou", type=float, default=0.50)
     parser.add_argument("--sample-file", type=Path, help="Shared fixed-image JSON manifest")
+    parser.add_argument(
+        "--samples-per-group",
+        type=int,
+        default=1,
+        help="Number of images selected for each representative group (default: 1)",
+    )
     args = parser.parse_args()
     generate_representative_visualization(
         dataset_dir=args.dataset_dir,
@@ -480,6 +516,7 @@ def main() -> None:
         confidence_threshold=args.confidence,
         iou_threshold=args.iou,
         sample_file=args.sample_file,
+        samples_per_group=args.samples_per_group,
     )
 
 

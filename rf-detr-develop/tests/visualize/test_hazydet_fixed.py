@@ -5,6 +5,7 @@
 # ------------------------------------------------------------------------
 """Tests for model-independent, reusable HazyDet image selection."""
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +42,31 @@ def _records(directory: Path) -> list[ImageResult]:
     return records
 
 
+def _many_records(directory: Path, count: int) -> list[ImageResult]:
+    records = []
+    for index in range(count):
+        path = directory / f"many_{index}.jpg"
+        path.write_bytes(f"image {index}".encode())
+        records.append(
+            ImageResult(
+                image_id=index,
+                path=path,
+                width=100,
+                height=100,
+                gt_boxes=np.empty((0, 4)),
+                gt_classes=np.empty(0, dtype=int),
+                object_count=index,
+                mean_area_ratio=0.01,
+                small_ratio=index / max(count - 1, 1),
+                brightness=0.5,
+                contrast=0.1,
+                saturation=0.2,
+                haze_score=index / max(count - 1, 1),
+            )
+        )
+    return records
+
+
 def test_selection_does_not_depend_on_model_predictions(tmp_path: Path) -> None:
     """Changing model metrics cannot change the selected image IDs or order."""
     records = _records(tmp_path)
@@ -64,3 +90,13 @@ def test_manifest_reuses_images_and_detects_changed_content(tmp_path: Path) -> N
     first[0][1].path.write_bytes(b"different image")
     with pytest.raises(ValueError, match="missing or changed"):
         load_or_create_fixed_selection(records, manifest, "valid")
+
+
+def test_multiple_samples_per_group_are_distinct_and_persisted(tmp_path: Path) -> None:
+    records = _many_records(tmp_path, 27)
+    manifest = tmp_path / "fixed_samples_valid_3.json"
+    selected = load_or_create_fixed_selection(records, manifest, "valid", samples_per_group=3)
+
+    assert len(selected) == 27
+    assert len({record.image_id for _, record in selected}) == 27
+    assert json.loads(manifest.read_text(encoding="utf-8"))["samples_per_group"] == 3
