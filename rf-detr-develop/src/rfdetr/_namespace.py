@@ -32,6 +32,7 @@ _MC_NAMESPACE_FIELDS = {
     "gradient_checkpointing",
     "group_detr",
     "hbs_enabled",
+    "hbs_adaptive",
     "hbs_reduction",
     "hidden_dim",
     "ia_bce_loss",

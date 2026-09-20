@@ -108,12 +108,14 @@ class TestBuildModelCharacterization:
             pretrain_weights=None,
             device="cpu",
             hbs_enabled=True,
+            hbs_adaptive=True,
             hbs_reduction=8,
         )
 
         model = build_model(_make_ns(mc=mc))
 
         assert model.hbs is not None
+        assert model.hbs.adaptive is True
         assert len(model.hbs.denoisers) == len(mc.projector_scale)
 
     def test_num_feature_levels_set_on_args(self) -> None:

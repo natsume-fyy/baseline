@@ -134,6 +134,7 @@ class LWDETR(nn.Module):
         grouppose_keypoint_dim_downscale: int = 1,
         hbs_enabled: bool = False,
         hbs_reduction: int = 4,
+        hbs_adaptive: bool = False,
         hbs_kernel_sizes: list[int] | None = None,
     ):
         """Initializes the model.
@@ -168,6 +169,7 @@ class LWDETR(nn.Module):
                 channels=hidden_dim,
                 kernel_sizes=hbs_kernel_sizes or [3],
                 reduction=hbs_reduction,
+                adaptive=hbs_adaptive,
             )
             if hbs_enabled
             else None
@@ -889,6 +891,7 @@ def build_model(args: "BuilderArgs"):
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
         hbs_enabled=getattr(args, "hbs_enabled", False),
         hbs_reduction=getattr(args, "hbs_reduction", 4),
+        hbs_adaptive=getattr(args, "hbs_adaptive", False),
         hbs_kernel_sizes=[
             (int(math.log2({"P3": 8, "P4": 16, "P5": 32, "P6": 64}[level])) // 2 * 2) + 1
             for level in args.projector_scale

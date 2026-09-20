@@ -57,7 +57,7 @@ class BackgroundSmoothingBlock(nn.Module):
 
 
 class HBS(nn.Module):
-    """Apply scale-adaptive smoothing only outside ground-truth boxes.
+    """Apply scale- and image-adaptive smoothing outside ground-truth boxes.
 
     RF-DETR targets store boxes as normalized ``(cx, cy, width, height)`` coordinates. A foreground mask is rasterized
     independently at each feature level, which is equivalent to SET's full-resolution mask followed by nearest-neighbor
@@ -67,9 +67,17 @@ class HBS(nn.Module):
         channels: Channel count shared by projected feature levels.
         kernel_sizes: One odd denoising kernel size per feature level.
         reduction: Bottleneck channel reduction factor.
+        adaptive: Whether to modulate the smoothing residual per image using
+            target density, foreground occupancy, and background high-frequency energy.
     """
 
-    def __init__(self, channels: int, kernel_sizes: list[int], reduction: int = 4) -> None:
+    def __init__(
+        self,
+        channels: int,
+        kernel_sizes: list[int],
+        reduction: int = 4,
+        adaptive: bool = False,
+    ) -> None:
         super().__init__()
         if not kernel_sizes:
             raise ValueError("kernel_sizes must contain at least one feature level.")
@@ -79,6 +87,80 @@ class HBS(nn.Module):
                 for kernel_size in kernel_sizes
             ]
         )
+        self.adaptive = adaptive
+
+    @staticmethod
+    def _adaptive_weights(
+        feature: torch.Tensor,
+        foreground_mask: torch.Tensor,
+        valid_mask: torch.Tensor,
+        targets: list[dict[str, torch.Tensor]],
+    ) -> torch.Tensor:
+        """Compute an interpretable HBS strength for every image.
+
+        Sparse images with a large, high-frequency background receive a high
+        weight. Dense images, especially those containing many small objects,
+        receive a low weight. Statistics are detached so the backbone cannot
+        reduce the training objective by manipulating the gate descriptors.
+
+        Args:
+            feature: Projected feature map shaped ``(B, C, H, W)``.
+            foreground_mask: Rasterized foreground mask shaped ``(B, 1, H, W)``.
+            valid_mask: Non-padding mask shaped ``(B, 1, H, W)``.
+            targets: Per-image target dictionaries containing normalized boxes.
+
+        Returns:
+            Per-image smoothing weights shaped ``(B, 1, 1, 1)``.
+        """
+        with torch.no_grad():
+            values = feature.detach().float()
+            background_mask = (valid_mask - foreground_mask).float().clamp_min(0)
+            valid_count = valid_mask.float().sum(dim=(-2, -1), keepdim=True).clamp_min(1)
+            background_ratio = background_mask.sum(dim=(-2, -1), keepdim=True) / valid_count
+
+            horizontal_mask = background_mask[..., :, 1:] * background_mask[..., :, :-1]
+            vertical_mask = background_mask[..., 1:, :] * background_mask[..., :-1, :]
+            horizontal_delta = (values[..., :, 1:] - values[..., :, :-1]).abs() * horizontal_mask
+            vertical_delta = (values[..., 1:, :] - values[..., :-1, :]).abs() * vertical_mask
+            pair_count = (
+                horizontal_mask.sum(dim=(-2, -1), keepdim=True)
+                + vertical_mask.sum(dim=(-2, -1), keepdim=True)
+            ).clamp_min(1)
+            high_frequency = (
+                horizontal_delta.sum(dim=(-2, -1), keepdim=True)
+                + vertical_delta.sum(dim=(-2, -1), keepdim=True)
+            ) / pair_count
+            background_scale = (
+                (values.abs() * background_mask).sum(dim=(-2, -1), keepdim=True)
+                / background_mask.sum(dim=(-2, -1), keepdim=True).clamp_min(1)
+            ).mean(dim=1, keepdim=True)
+            high_frequency = high_frequency.mean(dim=1, keepdim=True)
+            high_frequency = high_frequency / (high_frequency + background_scale + 1e-6)
+
+            object_counts = torch.tensor(
+                [target["boxes"].shape[0] for target in targets],
+                dtype=torch.float32,
+                device=feature.device,
+            ).view(-1, 1, 1, 1)
+            sparse_score = torch.exp(-object_counts / 8.0)
+            small_ratios = []
+            for target in targets:
+                boxes = target["boxes"].detach().float()
+                if boxes.numel() == 0:
+                    small_ratios.append(0.0)
+                else:
+                    small_ratios.append(float(((boxes[:, 2] * boxes[:, 3]) <= 0.01).float().mean().item()))
+            small_ratio = torch.tensor(small_ratios, device=feature.device).view(-1, 1, 1, 1)
+            small_object_crowding = (1 - sparse_score) * small_ratio
+
+            logits = (
+                -3.0
+                + 2.0 * background_ratio
+                + 2.0 * sparse_score
+                + 2.0 * high_frequency
+                - 4.0 * small_object_crowding
+            )
+            return logits.sigmoid().to(dtype=feature.dtype)
 
     @staticmethod
     def _foreground_mask(
@@ -195,5 +277,9 @@ class HBS(nn.Module):
                 foreground_mask = foreground_mask * valid_mask
             background_mask = valid_mask - foreground_mask
             smoothed_background = denoiser(feature * background_mask)
-            outputs.append(smoothed_background * background_mask + feature * (1 - background_mask))
+            if self.adaptive:
+                weight = self._adaptive_weights(feature, foreground_mask, valid_mask, targets)
+            else:
+                weight = 1.0
+            outputs.append(feature + weight * background_mask * (smoothed_background - feature))
         return outputs

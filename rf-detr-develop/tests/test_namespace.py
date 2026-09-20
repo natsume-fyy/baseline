@@ -53,12 +53,18 @@ class TestNamespaceForwarding:
 
     def test_hbs_model_fields_forwarded(self: "TestNamespaceForwarding") -> None:
         """HBS architecture settings must reach the legacy model builder namespace."""
-        mc = RFDETRBaseConfig(num_classes=80, hbs_enabled=True, hbs_reduction=8)
+        mc = RFDETRBaseConfig(
+            num_classes=80,
+            hbs_enabled=True,
+            hbs_adaptive=True,
+            hbs_reduction=8,
+        )
         tc = TrainConfig(dataset_dir="/tmp", hbs_loss_coef=0.4)
 
         ns = _namespace_from_configs(mc, tc)
 
         assert ns.hbs_enabled is True
+        assert ns.hbs_adaptive is True
         assert ns.hbs_reduction == 8
         assert ns.hbs_loss_coef == pytest.approx(0.4)
 

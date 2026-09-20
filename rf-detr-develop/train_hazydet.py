@@ -4,7 +4,7 @@ from visualize_hazydet import generate_representative_visualization
 
 
 DATASET_DIR = "/root/autodl-tmp/HazyDet_RFDETR"
-OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_hbs"
+OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_hbs_adaptive"
 VISUALIZE_AFTER_TRAINING = True
 SAMPLES_PER_GROUP = 3
 FIXED_SAMPLE_FILE = "/root/autodl-tmp/rf-detr/output/hazydet_fixed_samples_valid_3_per_group.json"
@@ -15,6 +15,7 @@ def main():
     # model = RFDETRSmall()
     model = RFDETRSmall(
         hbs_enabled=True,
+        hbs_adaptive=True,
         hbs_reduction=4,
     )
 

@@ -520,6 +520,7 @@ class ModelConfig(BaseConfig):
     dual_projector_kp_only: bool = False
     hbs_enabled: bool = False
     hbs_reduction: int = Field(default=4, ge=1)
+    hbs_adaptive: bool = False
     num_keypoints_per_class: list[int] = Field(default_factory=list)
     num_decoder_registers: int = 0
     mask_downsample_ratio: int = 4
