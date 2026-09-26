@@ -101,14 +101,13 @@ class TestBuildModelCharacterization:
         model = build_model(ns)
         assert model.group_detr == mc.group_detr
 
-    def test_projector_cbam_is_built_for_p4_model(self) -> None:
-        """The model should attach CBAM between each projector level and the transformer."""
+    def test_head_cbam_is_built_for_p4_model(self) -> None:
+        """The model should attach query CBAM immediately before the detection heads."""
         mc = RFDETRBaseConfig(num_classes=80, pretrain_weights=None, device="cpu")
 
         model = build_model(_make_ns(mc=mc))
 
-        assert model.projector_attention is not None
-        assert len(model.projector_attention) == len(mc.projector_scale)
+        assert model.head_cbam is not None
 
     def test_num_feature_levels_set_on_args(self) -> None:
         """build_model mutates args.num_feature_levels = len(projector_scale)."""

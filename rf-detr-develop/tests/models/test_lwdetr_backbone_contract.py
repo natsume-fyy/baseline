@@ -17,7 +17,7 @@ from rfdetr.utilities.tensors import NestedTensor
 class _AddOneAttention(nn.Module):
     """Deterministic test attention used to expose its position in the graph."""
 
-    def forward(self, features: torch.Tensor, padding_mask: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
         """Add one to every feature value."""
         return features + 1
 
@@ -69,8 +69,8 @@ def test_lwdetr_default_detection_forward_after_backbone_change() -> None:
     assert outputs["pred_boxes"].shape == (batch_size, num_queries, 4)
 
 
-def test_projector_attention_runs_before_transformer() -> None:
-    """The transformer must receive attended rather than raw projector features."""
+def test_head_attention_runs_after_transformer_before_detection_head() -> None:
+    """The detection head must receive attended transformer queries."""
     batch_size = 1
     hidden_dim = 4
     num_queries = 3
@@ -96,9 +96,10 @@ def test_projector_attention_runs_before_transformer() -> None:
         num_classes=2,
         num_queries=num_queries,
     )
-    model.projector_attention = nn.ModuleList([_AddOneAttention()])
+    model.head_cbam = _AddOneAttention()
+    nn.init.ones_(model.class_embed.weight)
+    nn.init.zeros_(model.class_embed.bias)
 
-    model(torch.zeros(batch_size, 3, 8, 8))
+    outputs = model(torch.zeros(batch_size, 3, 8, 8))
 
-    transformer_srcs = transformer.call_args.args[0]
-    torch.testing.assert_close(transformer_srcs[0], torch.ones_like(transformer_srcs[0]))
+    torch.testing.assert_close(outputs["pred_logits"], torch.full_like(outputs["pred_logits"], hidden_dim))

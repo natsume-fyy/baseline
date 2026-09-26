@@ -139,6 +139,7 @@ def _filter_intentional_keys(keys: list[str]) -> list[str]:
         "p4_eca.",
         "head_eca.",
         "projector_attention.",
+        "head_cbam.",
     )
 
     def _is_intentional(key: str) -> bool:

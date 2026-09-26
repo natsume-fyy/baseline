@@ -42,7 +42,7 @@ from rfdetr.models.criterion import (  # noqa: F401 — backward compat
     sigmoid_focal_loss,
     sigmoid_varifocal_loss,
 )
-from rfdetr.models.cbam import CBAMAttention
+from rfdetr.models.cbam import QueryCBAMAttention
 from rfdetr.models.heads.segmentation import SegmentationHead
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
@@ -132,8 +132,7 @@ class LWDETR(nn.Module):
         use_grouppose_keypoints=False,
         num_keypoints_per_class: list[int] | None = None,
         grouppose_keypoint_dim_downscale: int = 1,
-        use_projector_cbam: bool = False,
-        num_feature_levels: int = 1,
+        use_head_cbam: bool = False,
     ):
         """Initializes the model.
 
@@ -146,9 +145,8 @@ class LWDETR(nn.Module):
             aux_loss: True if auxiliary decoding losses (loss at each decoder layer) are to be used.
             group_detr: Number of groups to speed detr training. Default is 1.
             lite_refpoint_refine: TODO
-            use_projector_cbam: Whether to apply CBAM to projected features
-                immediately before the transformer.
-            num_feature_levels: Number of projected feature-pyramid levels.
+            use_head_cbam: Whether to apply channel-query CBAM to decoder
+                features immediately before the detection heads.
         """
         super().__init__()
         self.num_queries = num_queries
@@ -165,11 +163,7 @@ class LWDETR(nn.Module):
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.group_detr = group_detr
-        self.projector_attention = (
-            nn.ModuleList(CBAMAttention(hidden_dim) for _ in range(num_feature_levels))
-            if use_projector_cbam
-            else None
-        )
+        self.head_cbam = QueryCBAMAttention(hidden_dim) if use_head_cbam else None
 
         # iter update
         self.lite_refpoint_refine = lite_refpoint_refine
@@ -497,10 +491,8 @@ class LWDETR(nn.Module):
 
         srcs = []
         masks = []
-        for level, feat in enumerate(features):
+        for feat in features:
             src, mask = feat.decompose()
-            if self.projector_attention is not None:
-                src = self.projector_attention[level](src, mask)
             srcs.append(src)
             masks.append(mask)
             assert mask is not None
@@ -519,10 +511,8 @@ class LWDETR(nn.Module):
         cross_attn_srcs = None
         if cross_attn_features is not None:
             cross_attn_srcs = []
-            for level, feature in enumerate(cross_attn_features):
-                cross_src, cross_mask = feature.decompose()
-                if self.projector_attention is not None:
-                    cross_src = self.projector_attention[level](cross_src, cross_mask)
+            for feature in cross_attn_features:
+                cross_src, _ = feature.decompose()
                 cross_attn_srcs.append(cross_src)
 
         transformer_outputs = self.transformer(
@@ -541,6 +531,8 @@ class LWDETR(nn.Module):
             enc_kp_predictions = None
 
         if hs is not None:
+            if self.head_cbam is not None:
+                hs = self.head_cbam(hs)
             if self.bbox_reparam:
                 outputs_coord_delta = self.bbox_embed(hs)
                 outputs_coord_cxcy = outputs_coord_delta[..., :2] * ref_unsigmoid[..., 2:] + ref_unsigmoid[..., :2]
@@ -637,13 +629,6 @@ class LWDETR(nn.Module):
 
     def forward_export(self, tensors):
         srcs, masks, poss, cross_attn_srcs = self.backbone(tensors)
-        if self.projector_attention is not None:
-            srcs = [attention(src, mask) for attention, src, mask in zip(self.projector_attention, srcs, masks)]
-            if cross_attn_srcs is not None:
-                cross_attn_srcs = [
-                    attention(src, mask)
-                    for attention, src, mask in zip(self.projector_attention, cross_attn_srcs, masks)
-                ]
         # only use one group in inference
         refpoint_embed_weight = self.refpoint_embed.weight[: self.num_queries]
         query_feat_weight = self.query_feat.weight[: self.num_queries]
@@ -667,6 +652,8 @@ class LWDETR(nn.Module):
         outputs_keypoints = None
 
         if hs is not None:
+            if self.head_cbam is not None:
+                hs = self.head_cbam(hs)
             if self.bbox_reparam:
                 outputs_coord_delta = self.bbox_embed(hs)
                 outputs_coord_cxcy = outputs_coord_delta[..., :2] * ref_unsigmoid[..., 2:] + ref_unsigmoid[..., :2]
@@ -868,8 +855,7 @@ def build_model(args: "BuilderArgs"):
         use_grouppose_keypoints=getattr(args, "use_grouppose_keypoints", False),
         num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
-        use_projector_cbam="P4" in args.projector_scale,
-        num_feature_levels=len(args.projector_scale),
+        use_head_cbam="P4" in args.projector_scale,
     )
     return model
 

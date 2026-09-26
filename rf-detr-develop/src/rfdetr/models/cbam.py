@@ -90,3 +90,58 @@ class CBAMAttention(nn.Module):
             spatial_descriptor = spatial_descriptor.masked_fill(padding_mask.unsqueeze(1), 0)
         spatial_weights = 2 * self.spatial_conv(spatial_descriptor).sigmoid()
         return channel_refined * spatial_weights
+
+
+class QueryCBAMAttention(nn.Module):
+    """Apply joint channel-query attention before the detection heads.
+
+    Decoder queries do not retain a regular two-dimensional image grid, so the
+    spatial branch of standard CBAM is expressed as query attention. Channel
+    attention pools over queries, then query attention pools over channels.
+    Both gates use identity-preserving initialization for pretrained models.
+
+    Args:
+        channels: Width of each decoder query.
+        reduction: Channel-MLP reduction ratio.
+        query_kernel_size: Kernel size used across neighboring queries.
+    """
+
+    def __init__(self, channels: int, reduction: int = 16, query_kernel_size: int = 7) -> None:
+        super().__init__()
+        if channels <= 0:
+            raise ValueError(f"channels must be positive, got {channels}.")
+        if reduction <= 0:
+            raise ValueError(f"reduction must be positive, got {reduction}.")
+        if query_kernel_size <= 0 or query_kernel_size % 2 == 0:
+            raise ValueError("query_kernel_size must be a positive odd integer.")
+
+        hidden_channels = max(channels // reduction, 1)
+        self.channel_mlp = nn.Sequential(
+            nn.Linear(channels, hidden_channels, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_channels, channels, bias=False),
+        )
+        self.query_conv = nn.Conv1d(
+            2,
+            1,
+            kernel_size=query_kernel_size,
+            padding=query_kernel_size // 2,
+            bias=False,
+        )
+        nn.init.zeros_(self.channel_mlp[-1].weight)
+        nn.init.zeros_(self.query_conv.weight)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """Reweight a ``(..., num_queries, channels)`` decoder tensor."""
+        channel_avg = features.mean(dim=-2)
+        channel_max = features.amax(dim=-2)
+        channel_weights = 2 * (self.channel_mlp(channel_avg) + self.channel_mlp(channel_max)).sigmoid()
+        channel_refined = features * channel_weights.unsqueeze(-2)
+
+        query_avg = channel_refined.mean(dim=-1)
+        query_max = channel_refined.amax(dim=-1)
+        query_descriptor = torch.stack((query_avg, query_max), dim=-2)
+        flat_descriptor = query_descriptor.reshape(-1, 2, query_descriptor.shape[-1])
+        query_weights = 2 * self.query_conv(flat_descriptor).sigmoid()
+        query_weights = query_weights.reshape(*query_avg.shape).unsqueeze(-1)
+        return channel_refined * query_weights
