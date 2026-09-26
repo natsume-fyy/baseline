@@ -15,6 +15,7 @@
 
 from rfdetr.models._defaults import MODEL_DEFAULTS, ModelDefaults
 from rfdetr.models._types import BuilderArgs
+from rfdetr.models.cbam import CBAMAttention
 from rfdetr.models.criterion import SetCriterion
 from rfdetr.models.eca import ECAAttention, QueryECAAttention
 from rfdetr.models.lwdetr import build_criterion_from_config, build_model, build_model_from_config
@@ -27,6 +28,7 @@ __all__ = [
     "MODEL_DEFAULTS",
     "ModelDefaults",
     "SetCriterion",
+    "CBAMAttention",
     "ECAAttention",
     "QueryECAAttention",
     "build_criterion_from_config",

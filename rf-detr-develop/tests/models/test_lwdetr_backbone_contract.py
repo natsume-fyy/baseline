@@ -8,9 +8,18 @@
 from unittest.mock import MagicMock
 
 import torch
+from torch import nn
 
 from rfdetr.models.lwdetr import LWDETR
 from rfdetr.utilities.tensors import NestedTensor
+
+
+class _AddOneAttention(nn.Module):
+    """Deterministic test attention used to expose its position in the graph."""
+
+    def forward(self, features: torch.Tensor, padding_mask: torch.Tensor | None = None) -> torch.Tensor:
+        """Add one to every feature value."""
+        return features + 1
 
 
 def test_lwdetr_default_detection_forward_after_backbone_change() -> None:
@@ -58,3 +67,38 @@ def test_lwdetr_default_detection_forward_after_backbone_change() -> None:
 
     assert outputs["pred_logits"].shape == (batch_size, num_queries, num_classes)
     assert outputs["pred_boxes"].shape == (batch_size, num_queries, 4)
+
+
+def test_projector_attention_runs_before_transformer() -> None:
+    """The transformer must receive attended rather than raw projector features."""
+    batch_size = 1
+    hidden_dim = 4
+    num_queries = 3
+    features = [
+        NestedTensor(
+            torch.zeros(batch_size, hidden_dim, 4, 4),
+            torch.zeros(batch_size, 4, 4, dtype=torch.bool),
+        )
+    ]
+    backbone = MagicMock(return_value=(features, [torch.zeros(batch_size, hidden_dim, 4, 4)], None))
+    transformer = MagicMock()
+    transformer.d_model = hidden_dim
+    transformer.return_value = (
+        torch.zeros(1, batch_size, num_queries, hidden_dim),
+        torch.zeros(1, batch_size, num_queries, 4),
+        torch.zeros(batch_size, num_queries, hidden_dim),
+        torch.zeros(batch_size, num_queries, 4),
+    )
+    model = LWDETR(
+        backbone=backbone,
+        transformer=transformer,
+        segmentation_head=None,
+        num_classes=2,
+        num_queries=num_queries,
+    )
+    model.projector_attention = nn.ModuleList([_AddOneAttention()])
+
+    model(torch.zeros(batch_size, 3, 8, 8))
+
+    transformer_srcs = transformer.call_args.args[0]
+    torch.testing.assert_close(transformer_srcs[0], torch.ones_like(transformer_srcs[0]))
