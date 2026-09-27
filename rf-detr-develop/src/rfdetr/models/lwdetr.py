@@ -42,6 +42,7 @@ from rfdetr.models.criterion import (  # noqa: F401 — backward compat
     sigmoid_focal_loss,
     sigmoid_varifocal_loss,
 )
+from rfdetr.models.heads.cbam import CBAM
 from rfdetr.models.heads.segmentation import SegmentationHead
 from rfdetr.models.hbs import HBS
 from rfdetr.models.matcher import build_matcher
@@ -152,6 +153,7 @@ class LWDETR(nn.Module):
         self.num_queries = num_queries
         self.transformer = transformer
         hidden_dim = transformer.d_model
+        self.cbam = CBAM(hidden_dim)
         self.class_embed = nn.Linear(hidden_dim, num_classes)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.segmentation_head = segmentation_head
@@ -506,6 +508,29 @@ class LWDETR(nn.Module):
             )
         return out
 
+    def _apply_detection_attention(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """Apply CBAM independently to each Group DETR query group.
+
+        Args:
+            hidden_states: Decoder features with shape
+                ``(..., grouped_queries, hidden_dim)``.
+
+        Returns:
+            Refined features with the same shape as ``hidden_states``.
+        """
+        num_groups = self.group_detr if self.training else 1
+        num_grouped_queries = hidden_states.shape[-2]
+        if num_grouped_queries % num_groups != 0:
+            raise ValueError(
+                f"Decoder query count {num_grouped_queries} is not divisible by "
+                f"the active Group DETR group count {num_groups}."
+            )
+
+        queries_per_group = num_grouped_queries // num_groups
+        grouped_shape = (*hidden_states.shape[:-2], num_groups, queries_per_group, hidden_states.shape[-1])
+        grouped_hidden_states = hidden_states.reshape(grouped_shape)
+        return self.cbam(grouped_hidden_states).reshape_as(hidden_states)
+
     def _forward_from_backbone_features(
         self,
         samples: NestedTensor,
@@ -567,15 +592,16 @@ class LWDETR(nn.Module):
             enc_kp_predictions = None
 
         if hs is not None:
+            detection_hs = self._apply_detection_attention(hs)
             if self.bbox_reparam:
-                outputs_coord_delta = self.bbox_embed(hs)
+                outputs_coord_delta = self.bbox_embed(detection_hs)
                 outputs_coord_cxcy = outputs_coord_delta[..., :2] * ref_unsigmoid[..., 2:] + ref_unsigmoid[..., :2]
                 outputs_coord_wh = outputs_coord_delta[..., 2:].exp() * ref_unsigmoid[..., 2:]
                 outputs_coord = torch.concat([outputs_coord_cxcy, outputs_coord_wh], dim=-1)
             else:
-                outputs_coord = (self.bbox_embed(hs) + ref_unsigmoid).sigmoid()
+                outputs_coord = (self.bbox_embed(detection_hs) + ref_unsigmoid).sigmoid()
 
-            outputs_class = self.class_embed(hs)
+            outputs_class = self.class_embed(detection_hs)
             outputs_keypoints = None
 
             if self.use_grouppose_keypoints and self.keypoint_embed is not None:
@@ -686,14 +712,15 @@ class LWDETR(nn.Module):
         outputs_keypoints = None
 
         if hs is not None:
+            detection_hs = self._apply_detection_attention(hs)
             if self.bbox_reparam:
-                outputs_coord_delta = self.bbox_embed(hs)
+                outputs_coord_delta = self.bbox_embed(detection_hs)
                 outputs_coord_cxcy = outputs_coord_delta[..., :2] * ref_unsigmoid[..., 2:] + ref_unsigmoid[..., :2]
                 outputs_coord_wh = outputs_coord_delta[..., 2:].exp() * ref_unsigmoid[..., 2:]
                 outputs_coord = torch.concat([outputs_coord_cxcy, outputs_coord_wh], dim=-1)
             else:
-                outputs_coord = (self.bbox_embed(hs) + ref_unsigmoid).sigmoid()
-            outputs_class = self.class_embed(hs)
+                outputs_coord = (self.bbox_embed(detection_hs) + ref_unsigmoid).sigmoid()
+            outputs_class = self.class_embed(detection_hs)
             if self.use_grouppose_keypoints and self.keypoint_embed is not None:
                 if keypoint_hs is None:
                     raise ValueError("use_grouppose_keypoints=True requires keypoint_hs from transformer outputs.")
