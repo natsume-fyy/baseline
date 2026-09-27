@@ -208,30 +208,6 @@ class TestReinitializeDetectionHead:
             )
 
 
-class TestDetectionHeadCBAM:
-    """Tests for CBAM integration immediately before the detection projections."""
-
-    def test_attention_preserves_grouped_decoder_shape(self) -> None:
-        """Training-time Group DETR queries should be refined without changing layout."""
-        model = _make_minimal_lwdetr(num_classes=3)
-        model.group_detr = 2
-        model.train()
-        hidden_states = torch.randn(6, 2, 4, 4)
-
-        output = model._apply_detection_attention(hidden_states)
-
-        assert output.shape == hidden_states.shape
-
-    def test_attention_rejects_invalid_grouped_query_count(self) -> None:
-        """Malformed grouped decoder outputs should raise a clear error."""
-        model = _make_minimal_lwdetr(num_classes=3)
-        model.group_detr = 2
-        model.train()
-
-        with pytest.raises(ValueError, match="not divisible"):
-            model._apply_detection_attention(torch.randn(6, 2, 3, 4))
-
-
 class TestAggregateKeypointClassLogits:
     """Regression tests for LWDETR._aggregate_keypoint_class_logits().
 

@@ -17,6 +17,7 @@
 import torch
 import torch.nn.functional as F  # noqa: N812
 
+from rfdetr.models.backbone.attention import FeaturePyramidCBAM
 from rfdetr.models.backbone.base import BackboneBase
 from rfdetr.models.backbone.dinov2 import DinoV2
 from rfdetr.models.backbone.projector import MultiScaleProjector
@@ -107,6 +108,13 @@ class Backbone(BackboneBase):
             layer_norm=layer_norm,
             rms_norm=rms_norm,
         )
+        attention_level_indexes = [
+            level_index for level_index, level_name in enumerate(self.projector_scale) if level_name in {"P3", "P4"}
+        ]
+        self.feature_attention = FeaturePyramidCBAM(
+            channels=out_channels,
+            level_indexes=attention_level_indexes,
+        )
         self.cross_attn_projector = (
             MultiScaleProjector(
                 in_channels=self.encoder._out_feature_channels,
@@ -148,12 +156,14 @@ class Backbone(BackboneBase):
         raw_feats = self.encoder(tensor_list.tensors)
         feats = self.projector(raw_feats)
         # x: [(B, C, H, W)]
-        out = []
+        masks = []
         for feat in feats:
             m = tensor_list.mask
             assert m is not None
             mask = F.interpolate(m[None].float(), size=feat.shape[-2:]).to(torch.bool)[0]
-            out.append(NestedTensor(feat, mask))
+            masks.append(mask)
+        feats = self.feature_attention(feats, masks)
+        out = [NestedTensor(feat, mask) for feat, mask in zip(feats, masks)]
 
         cross_attn_out = None
         if self.cross_attn_projector is not None:
@@ -170,6 +180,7 @@ class Backbone(BackboneBase):
     def forward_export(self, tensors: torch.Tensor):
         raw_feats = self.encoder(tensors)
         feats = self.projector(raw_feats)
+        feats = self.feature_attention(feats)
         out_feats = []
         out_masks = []
         for feat in feats:
