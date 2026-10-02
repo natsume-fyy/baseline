@@ -30,6 +30,7 @@ import PIL
 import torch
 from PIL import Image
 from torchvision.transforms import Normalize as _TVNormalize
+from torchvision.transforms.functional import to_tensor
 
 from rfdetr.datasets._aug_utils import filter_keypoint_hflip_augmentations
 from rfdetr.utilities.box_ops import box_xyxy_to_cxcywh
@@ -53,6 +54,15 @@ class Normalize(object):
         if target is None:
             return image, None
         target = target.copy()
+        if "_clear_image" in target:
+            clear = target.pop("_clear_image")
+            if not torch.is_tensor(clear):
+                clear = to_tensor(clear)
+            elif not clear.is_floating_point():
+                clear = clear.float() / 255.0
+            if clear.shape != image.shape:
+                raise ValueError("Paired images lost alignment during augmentation.")
+            target["clear_image"] = self._normalize(clear)
         h, w = image.shape[-2:]
         if "boxes" in target:
             boxes = target["boxes"]
@@ -704,6 +714,9 @@ class AlbumentationsWrapper:
                     "keypoint_visibility": [],
                 }
             )
+        if "_clear_image" in target:
+            self.transform.add_targets({"paired_clear": "image"})
+            transform_kwargs["paired_clear"] = np.array(target["_clear_image"])
         augmented = self.transform(**transform_kwargs)
         target_out: Dict[str, Any] = target.copy()
         bboxes_aug = augmented["bboxes"]
@@ -739,6 +752,8 @@ class AlbumentationsWrapper:
                     flip_pairs=self._keypoint_flip_pairs,
                     did_flip=did_flip,
                 )
+        if "paired_clear" in augmented:
+            target_out["_clear_image"] = Image.fromarray(augmented["paired_clear"])
         image_out = Image.fromarray(augmented["image"])
         if masks_list is not None and "masks" in augmented:
             height, width = augmented["image"].shape[:2]

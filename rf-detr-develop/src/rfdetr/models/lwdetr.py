@@ -42,8 +42,8 @@ from rfdetr.models.criterion import (  # noqa: F401 — backward compat
     sigmoid_focal_loss,
     sigmoid_varifocal_loss,
 )
-from rfdetr.models.heads.segmentation import SegmentationHead
 from rfdetr.models.hbs import HBS
+from rfdetr.models.heads.segmentation import SegmentationHead
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
 from rfdetr.models.postprocess import PostProcess
@@ -457,7 +457,7 @@ class LWDETR(nn.Module):
             class_boost = class_boost[..., :detection_num_classes]
         return class_boost
 
-    def forward(self, samples: NestedTensor, targets=None):
+    def forward(self, samples: NestedTensor, targets=None, return_features: bool = False):
         """The forward expects a NestedTensor, which consists of:
 
            - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
@@ -478,6 +478,9 @@ class LWDETR(nn.Module):
         features, poss, cross_attn_features = self.backbone(samples)
 
         out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
+        if return_features:
+            # The training caller removes this entry before detection matching.
+            out["distill_features"] = features
         if self.training and self.hbs is not None and targets is not None:
             hbs_tensors = self.hbs(
                 [feature.tensors for feature in features],

@@ -19,6 +19,11 @@ from pytorch_lightning import LightningModule, seed_everything
 from rfdetr._namespace import _namespace_from_configs
 from rfdetr.config import ModelConfig, TrainConfig
 from rfdetr.datasets.coco import compute_multi_scale_scales
+from rfdetr.models.foreground_distillation import (
+    foreground_distillation_loss,
+    load_clear_teacher,
+    pack_clear_images,
+)
 from rfdetr.models.lwdetr import build_criterion_from_config, build_model_from_config
 from rfdetr.models.weights import apply_lora, interpolate_position_embeddings, load_pretrain_weights
 from rfdetr.training.param_groups import get_param_dict
@@ -81,6 +86,14 @@ class RFDETRModelModule(LightningModule):
         if model_config.backbone_lora:
             apply_lora(self.model)
 
+        self.fg_teacher = None
+        if train_config.fg_distill_coef > 0:
+            if model_config.segmentation_head or model_config.use_grouppose_keypoints:
+                raise ValueError("Foreground distillation currently supports detection models only.")
+            if not train_config.fg_teacher_weights or not train_config.fg_clear_dir:
+                raise ValueError("Set fg_teacher_weights and fg_clear_dir when fg_distill_coef > 0.")
+            self.fg_teacher = load_clear_teacher(self.model.backbone, train_config.fg_teacher_weights)
+
         # Build criterion/postprocessors after potential num_classes alignment so
         # they are constructed with a config that matches the current model head.
         self.criterion, self.postprocess = build_criterion_from_config(self.model_config, self.train_config)
@@ -138,6 +151,9 @@ class RFDETRModelModule(LightningModule):
         tc = self.train_config
         mc = self.model_config
 
+        clear_samples = None
+        if self.fg_teacher is not None:
+            clear_samples = pack_clear_images(*batch)
         if tc.multi_scale and not tc.do_random_resize_via_padding:
             samples, _ = batch
             scales = compute_multi_scale_scales(mc.resolution, tc.expanded_scales, mc.patch_size, mc.num_windows)
@@ -146,9 +162,17 @@ class RFDETRModelModule(LightningModule):
             scale = random.choice(scales)
             with torch.no_grad():
                 samples.tensors = F.interpolate(samples.tensors, size=scale, mode="bilinear", align_corners=False)
+                if clear_samples is not None:
+                    clear_samples.tensors = F.interpolate(
+                        clear_samples.tensors, size=scale, mode="bilinear", align_corners=False
+                    )
                 samples.mask = (
                     F.interpolate(samples.mask.unsqueeze(1).float(), size=scale, mode="nearest").squeeze(1).bool()
                 )
+
+        if clear_samples is not None:
+            for target, image in zip(batch[1], clear_samples.tensors):
+                target["clear_image"] = image
 
     def on_train_epoch_start(self) -> None:
         """Reset the accumulated box normalizer at the start of every training epoch.
@@ -195,7 +219,21 @@ class RFDETRModelModule(LightningModule):
         """
         samples, targets = batch
         batch_size = len(targets)
-        outputs = self.model(samples, targets)
+        fg_loss = None
+        if self.fg_teacher is not None:
+            clear_samples = pack_clear_images(samples, targets)
+            targets = [{key: value for key, value in target.items() if key != "clear_image"} for target in targets]
+            outputs = self.model(samples, targets, return_features=True)
+            student_features = outputs.pop("distill_features")
+            # Lightning's train() recursively changes submodule mode; restore the frozen teacher.
+            self.fg_teacher.eval()
+            with torch.no_grad():
+                teacher_features, _, _ = self.fg_teacher(clear_samples)
+            fg_loss = foreground_distillation_loss(
+                student_features, teacher_features, targets, self.train_config.fg_roi_size
+            )
+        else:
+            outputs = self.model(samples, targets)
         if self._use_manual_optimization:
             loss_dict, raw_loss, normalizer = self._compute_train_losses(outputs, targets)
             loss_for_backward = self._scale_loss_for_accumulation(raw_loss, normalizer)
@@ -204,6 +242,12 @@ class RFDETRModelModule(LightningModule):
             loss_for_backward = None
         weight_dict = self.criterion.weight_dict
         loss = sum(loss_dict[k] * weight_dict[k] for k in loss_dict if k in weight_dict)
+        if fg_loss is not None:
+            warmup = self.train_config.fg_distill_warmup_epochs
+            weight = self.train_config.fg_distill_coef * min(1.0, (self.current_epoch + 1) / max(1, warmup))
+            loss_dict["loss_fg_distill"] = fg_loss
+            loss_dict["loss_fg_distill_weighted"] = fg_loss * weight
+            loss = loss + fg_loss * weight
         # Automatic optimization path: divide by accumulate_grad_batches so the accumulated
         # gradient matches a single large batch, matching the legacy engine.  PTL accumulates
         # full-scale gradients by default; dividing here keeps the effective LR identical.

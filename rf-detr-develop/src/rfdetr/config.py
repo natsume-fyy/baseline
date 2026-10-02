@@ -535,7 +535,7 @@ class ModelConfig(BaseConfig):
             "without inspecting ``pretrain_weights``."
         ),
     )
-    
+
     @model_validator(mode="after")
     def _validate_hbs_task(self) -> "ModelConfig":
         """Restrict the current HBS integration to bounding-box detection.
@@ -1057,6 +1057,14 @@ class TrainConfig(BaseConfig):
     drop_path: float = 0.0
     cls_loss_coef: float = 1.0
     hbs_loss_coef: float = Field(default=0.25, ge=0.0)
+    # Training-only clear teacher foreground distillation; zero preserves old behavior.
+    fg_distill_coef: float = Field(default=0.0, ge=0.0)
+    fg_teacher_weights: Optional[str] = None
+    fg_clear_dir: Optional[str] = None
+    fg_hazy_dir: Optional[str] = None
+    fg_pair_manifest: Optional[str] = None
+    fg_roi_size: int = Field(default=3, ge=1)
+    fg_distill_warmup_epochs: int = Field(default=3, ge=0)
     # Detection-vs-keypoint distinction is derived by callers via `include_keypoints`, not
     # stored on this field. See rfdetr.datasets.transforms.AlbumentationsWrapper.from_config
     # for the None/[]/[...] tri-state contract applied at the augmentation-pipeline boundary.
@@ -1328,6 +1336,18 @@ class TrainConfig(BaseConfig):
                 stacklevel=2,
             )
         return data
+
+    @model_validator(mode="after")
+    def validate_foreground_distillation(self) -> "TrainConfig":
+        """Reject incomplete or unsupported paired-distillation configurations early."""
+        if self.fg_distill_coef > 0:
+            if not self.fg_teacher_weights or not self.fg_clear_dir:
+                raise ValueError("fg_teacher_weights and fg_clear_dir are required when fg_distill_coef > 0.")
+            if self.augmentation_backend != "cpu":
+                raise ValueError("Foreground distillation requires augmentation_backend='cpu'.")
+            if self.dataset_file not in {"coco", "roboflow"}:
+                raise ValueError("Foreground distillation requires a COCO/Roboflow detection dataset.")
+        return self
 
     @field_validator("optimizer", mode="after")
     @classmethod

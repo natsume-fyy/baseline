@@ -17,6 +17,8 @@ from rfdetr._namespace import _namespace_from_configs
 from rfdetr.config import ModelConfig, TrainConfig
 from rfdetr.datasets import build_dataset
 from rfdetr.datasets.aug_configs import AUG_CONFIG
+from rfdetr.datasets.clear_pairs import ClearImagePairs
+from rfdetr.datasets.coco import CocoDetection
 from rfdetr.utilities.box_ops import box_xyxy_to_cxcywh
 from rfdetr.utilities.logger import get_logger
 from rfdetr.utilities.tensors import make_collate_fn
@@ -233,7 +235,23 @@ class RFDETRDataModule(LightningDataModule):
                     "Set augmentation_backend='cpu' when use_grouppose_keypoints=True."
                 )
             if self._dataset_train is None:
+                if self.train_config.fg_distill_coef > 0 and resolved != "cpu":
+                    raise ValueError("Foreground distillation requires augmentation_backend='cpu'.")
                 self._dataset_train = build_dataset("train", ns, resolution)
+                if self.train_config.fg_distill_coef > 0:
+                    dataset = self._dataset_train
+                    if not isinstance(dataset, CocoDetection) or dataset.include_masks or dataset.include_keypoints:
+                        raise ValueError(
+                            "Foreground distillation currently requires a COCO/Roboflow detection dataset."
+                        )
+                    if not self.train_config.fg_clear_dir:
+                        raise ValueError("fg_clear_dir is required for foreground distillation.")
+                    dataset.clear_pairs = ClearImagePairs(
+                        [dataset.coco.imgs[index]["file_name"] for index in dataset.ids],
+                        self.train_config.fg_clear_dir,
+                        self.train_config.fg_hazy_dir or str(dataset.root),
+                        self.train_config.fg_pair_manifest,
+                    )
             if self._dataset_val is None:
                 self._dataset_val = build_dataset("val", ns, resolution)
             # Build Kornia GPU augmentation pipeline (once).

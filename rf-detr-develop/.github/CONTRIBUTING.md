@@ -495,3 +495,11 @@ All Python files must start with the following header:
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
 ```
+
+
+## Paired foreground distillation changes
+
+The clear teacher entry point is `train_clear_teacher.py`; validate its dataset preparation and training flags with
+`python tests/test_clear_teacher.py`. This focused check needs Pillow and does not launch training.
+
+When changing paired augmentation or HBS/teacher training integration, run `python -m pytest tests/test_foreground_distillation.py` and the affected training/dataset tests. Pairing setup and teacher requirements are documented in `docs/hbs_foreground_distillation.md`.

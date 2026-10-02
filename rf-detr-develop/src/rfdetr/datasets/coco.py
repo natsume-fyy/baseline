@@ -27,6 +27,7 @@ from PIL import Image
 from torchvision.transforms.v2 import Compose, ToDtype, ToImage
 
 from rfdetr.datasets.aug_configs import AUG_CONFIG
+from rfdetr.datasets.clear_pairs import ClearImagePairs
 from rfdetr.datasets.transforms import AlbumentationsWrapper, Normalize
 from rfdetr.utilities.logger import get_logger
 
@@ -242,6 +243,7 @@ class CocoDetection(torchvision.datasets.CocoDetection):
     ) -> None:
         super(CocoDetection, self).__init__(img_folder, ann_file)
         self._transforms = transforms
+        self.clear_pairs: ClearImagePairs | None = None
         self.include_masks = include_masks
         self.include_keypoints = include_keypoints
         if remap_category_ids:
@@ -265,14 +267,24 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         )
 
     def __getitem__(self, idx: int) -> Tuple[Any, Any]:
-        img, target = super(CocoDetection, self).__getitem__(idx)
         image_id = self.ids[idx]
+        clear = None
+        if self.clear_pairs is None:
+            img, target = super(CocoDetection, self).__getitem__(idx)
+        else:
+            metadata = self.coco.imgs[image_id]
+            img, clear = self.clear_pairs.load(metadata["file_name"], (metadata["width"], metadata["height"]))
+            target = self._load_target(image_id)
         target = {"image_id": image_id, "annotations": target}
         img, target = self.prepare(img, target)
+        if clear is not None:
+            target["_clear_image"] = clear
         if self._transforms is not None:
             # boxes are absolute [x_min, y_min, x_max, y_max]; conversion to
             # normalized [cx, cy, w, h] occurs inside Normalize
             img, target = self._transforms(img, target)
+        if clear is not None and "clear_image" not in target:
+            raise ValueError("Paired distillation requires the CPU Normalize transform.")
         return img, target
 
 

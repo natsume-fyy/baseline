@@ -138,3 +138,8 @@ This ensures future contributions stay consistent and reduces repeated feedback.
 ---
 
 **Note:** These instructions are GitHub Copilot-specific. When in doubt, refer to existing code patterns, contributing guidelines, and test files for examples.
+
+
+## Paired clear foreground distillation
+
+Optional training-only KD uses `TrainConfig.fg_distill_coef` (default 0). A frozen, strictly loaded clear backbone/projector supervises pre-HBS projected student ROI features. COCO training pairs share geometry and padding; validation and inference stay single-image. See [HBS foreground distillation](../docs/hbs_foreground_distillation.md) for pairing and supported settings. Preserve the disabled path and remove `distill_features` before criterion matching.

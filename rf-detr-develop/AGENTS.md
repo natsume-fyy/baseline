@@ -324,3 +324,8 @@ GitHub Actions workflows in `.github/workflows/`:
 ---
 
 **Note:** This file is designed for AI coding agents. For human-readable project information, see README.md. For contribution guidelines, see CONTRIBUTING.md.
+
+
+## Paired clear foreground distillation
+
+Optional training-only KD uses `TrainConfig.fg_distill_coef` (default 0). A frozen, strictly loaded clear backbone/projector supervises pre-HBS projected student ROI features. COCO training pairs share geometry and padding; validation and inference stay single-image. See [HBS foreground distillation](docs/hbs_foreground_distillation.md) for pairing and supported settings. Preserve the disabled path and remove `distill_features` before criterion matching.
