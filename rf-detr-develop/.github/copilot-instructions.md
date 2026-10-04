@@ -147,3 +147,11 @@ The main and optional cross-attention projectors each own their ECA; export uses
 Do not apply a second ECA in LWDETR. Existing C2f/LayerNorm state-dict keys remain unchanged.
 Checkpoints from the pre-C2f ECA placement must not be used for exact training resumption; retrain the relocated attention.
 Legacy top-level `p4_eca` weights are not automatically migrated to the projector.
+
+## HBS training branch
+
+`train_hazydet.py` enables HBS alongside P4 ECA. After the projector (including ECA),
+LWDETR runs the normal detection path and a training-only background-smoothed path
+using the same Transformer and prediction heads. HBS preserves GT foreground and padding.
+`hbs_loss_coef` scales the additional `_hbs` detection losses (default 0.25).
+Evaluation/export bypass HBS; the integration supports bounding-box detection only.

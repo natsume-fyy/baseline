@@ -617,7 +617,8 @@ class SetCriterion(nn.Module):
                 every loss in ``self.losses`` (for example ``"pred_logits"``,
                 ``"pred_boxes"``, ``"pred_masks"``, ``"pred_keypoints"``). May also
                 contain ``"aux_outputs"`` (list of layer-wise outputs),
-                ``"enc_outputs"`` (encoder outputs).
+                ``"enc_outputs"`` (encoder outputs), and ``"hbs_outputs"``
+                (training-only predictions from background-smoothed features).
             targets: Per-image target dictionaries; ``len(targets) == batch_size``.
                 The expected keys depend on the losses being applied — see each
                 ``loss_*`` method for its target requirements.
@@ -638,7 +639,8 @@ class SetCriterion(nn.Module):
             names (``"loss_ce"``, ``"loss_bbox"``, ``"loss_giou"``,
             ``"loss_mask_ce"``, ``"loss_mask_dice"``, ``"loss_keypoints_*"``).
             Auxiliary-layer losses get a ``"_<i>"`` suffix; encoder-layer losses
-            get an ``"_enc"`` suffix.
+            get an ``"_enc"`` suffix. Losses from the HBS branch get a final
+            ``"_hbs"`` suffix.
 
         Examples:
             >>> import torch
@@ -657,7 +659,7 @@ class SetCriterion(nn.Module):
         """
         group_detr = self.group_detr if self.training else 1
         outputs_without_aux = {
-            k: v for k, v in outputs.items() if k != "aux_outputs"
+            k: v for k, v in outputs.items() if k not in {"aux_outputs", "hbs_outputs"}
         }
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -699,5 +701,9 @@ class SetCriterion(nn.Module):
                 l_dict = self.get_loss(loss, enc_outputs, targets, indices, num_boxes, **kwargs)
                 l_dict = {k + "_enc": v for k, v in l_dict.items()}
                 losses.update(l_dict)
+
+        if "hbs_outputs" in outputs:
+            hbs_losses = self.forward(outputs["hbs_outputs"], targets, num_boxes=num_boxes)
+            losses.update({f"{key}_hbs": value for key, value in hbs_losses.items()})
 
         return losses
