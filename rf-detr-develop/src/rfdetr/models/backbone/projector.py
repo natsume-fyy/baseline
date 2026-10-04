@@ -18,6 +18,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 
+from rfdetr.models.eca import ECAAttention
+
 
 class LayerNorm(nn.Module):
     """A LayerNorm variant, popularized by Transformers, that performs point-wise mean and variance normalization over
@@ -188,6 +190,8 @@ class MultiScaleProjector(nn.Module):
         self.scale_factors = scale_factors
         self.survival_prob = survival_prob
         self.force_drop_last_n_features = force_drop_last_n_features
+        self.p4_feature_index = next((i for i, scale in enumerate(scale_factors) if scale == 1.0), None)
+        self.p4_eca = ECAAttention(sum(in_channels)) if self.p4_feature_index is not None else None
 
         stages_sampling = []
         stages = []
@@ -255,16 +259,15 @@ class MultiScaleProjector(nn.Module):
         self.stages_sampling = nn.ModuleList(stages_sampling)
         self.stages = nn.ModuleList(stages)
 
-    def forward(self, x):
+    def forward(self, x: list[torch.Tensor], padding_mask: torch.Tensor | None = None) -> list[torch.Tensor]:
         """
         Args:
-            x: Tensor of shape (N,C,H,W). H, W must be a multiple of ``self.size_divisibility``.
+            x: Encoder feature maps, each shaped (N, C, H, W).
+            padding_mask: Optional image mask; True marks padding excluded from ECA pooling.
+
         Returns:
-            dict[str->Tensor]:
-                mapping from feature map name to pyramid feature map tensor
-                in high to low resolution order. Returned feature names follow the FPN
-                convention: "p<stage>", where stage has stride = 2 ** stage e.g.,
-                ["p2", "p3", ..., "p6"].
+            Pyramid feature maps in scale_factors order. P4 uses ECA after
+            concatenation and before C2f fusion and LayerNorm.
         """
         num_features = len(x)
         if self.survival_prob < 1.0 and self.training:
@@ -289,6 +292,11 @@ class MultiScaleProjector(nn.Module):
                 feat_fuse = torch.cat(feat_fuse, dim=1)
             else:
                 feat_fuse = feat_fuse[0]
+            if i == self.p4_feature_index and self.p4_eca is not None:
+                mask = None
+                if padding_mask is not None:
+                    mask = F.interpolate(padding_mask[None].float(), size=feat_fuse.shape[-2:]).to(torch.bool)[0]
+                feat_fuse = self.p4_eca(feat_fuse, mask)
             results.append(stage(feat_fuse))
         if self.use_extra_pool:
             results.append(F.max_pool2d(results[-1], kernel_size=1, stride=2, padding=0))

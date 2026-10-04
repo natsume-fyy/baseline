@@ -138,3 +138,11 @@ This ensures future contributions stay consistent and reduces repeated feedback.
 ---
 
 **Note:** These instructions are GitHub Copilot-specific. When in doubt, refer to existing code patterns, contributing guidelines, and test files for examples.
+
+## P4 ECA placement
+
+P4 channel attention lives in `MultiScaleProjector.p4_eca`: sampling/Concat -> ECA -> C2f -> LayerNorm.
+It uses the concatenated input channel count and excludes padding from pooling during normal forward.
+The main and optional cross-attention projectors each own their ECA; export uses the same projector path.
+Do not apply a second ECA in LWDETR. Existing C2f/LayerNorm state-dict keys remain unchanged.
+Old post-projector `p4_eca` weights are not migrated; train the newly placed attention parameters.

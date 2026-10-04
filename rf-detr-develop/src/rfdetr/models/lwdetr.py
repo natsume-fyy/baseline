@@ -42,7 +42,6 @@ from rfdetr.models.criterion import (  # noqa: F401 — backward compat
     sigmoid_focal_loss,
     sigmoid_varifocal_loss,
 )
-from rfdetr.models.eca import ECAAttention
 from rfdetr.models.heads.segmentation import SegmentationHead
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
@@ -132,7 +131,6 @@ class LWDETR(nn.Module):
         use_grouppose_keypoints=False,
         num_keypoints_per_class: list[int] | None = None,
         grouppose_keypoint_dim_downscale: int = 1,
-        p4_feature_index: int | None = None,
     ):
         """Initializes the model.
 
@@ -161,8 +159,6 @@ class LWDETR(nn.Module):
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.group_detr = group_detr
-        self.p4_feature_index = p4_feature_index
-        self.p4_eca = ECAAttention(hidden_dim) if p4_feature_index is not None else None
 
         # iter update
         self.lite_refpoint_refine = lite_refpoint_refine
@@ -467,25 +463,7 @@ class LWDETR(nn.Module):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
         features, poss, cross_attn_features = self.backbone(samples)
-        features = self._apply_p4_eca(features)
-        cross_attn_features = self._apply_p4_eca(cross_attn_features)
         return self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
-
-    def _apply_p4_eca(self, features: list[NestedTensor] | None) -> list[NestedTensor] | None:
-        """Apply ECA to P4 while retaining its padding mask.
-
-        Args:
-            features: Projected backbone feature levels.
-
-        Returns:
-            Feature levels with attention applied only to P4.
-        """
-        if features is None or self.p4_eca is None or self.p4_feature_index is None:
-            return features
-        outputs = list(features)
-        p4 = outputs[self.p4_feature_index]
-        outputs[self.p4_feature_index] = NestedTensor(self.p4_eca(p4.tensors, p4.mask), p4.mask)
-        return outputs
 
     def _forward_from_backbone_features(
         self,
@@ -644,15 +622,6 @@ class LWDETR(nn.Module):
 
     def forward_export(self, tensors):
         srcs, masks, poss, cross_attn_srcs = self.backbone(tensors)
-        if self.p4_eca is not None and self.p4_feature_index is not None:
-            srcs = list(srcs)
-            p4_mask = masks[self.p4_feature_index]
-            srcs[self.p4_feature_index] = self.p4_eca(srcs[self.p4_feature_index], p4_mask)
-            if cross_attn_srcs is not None:
-                cross_attn_srcs = list(cross_attn_srcs)
-                cross_attn_srcs[self.p4_feature_index] = self.p4_eca(
-                    cross_attn_srcs[self.p4_feature_index], p4_mask
-                )
         # only use one group in inference
         refpoint_embed_weight = self.refpoint_embed.weight[: self.num_queries]
         query_feat_weight = self.query_feat.weight[: self.num_queries]
@@ -877,7 +846,6 @@ def build_model(args: "BuilderArgs"):
         use_grouppose_keypoints=getattr(args, "use_grouppose_keypoints", False),
         num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
-        p4_feature_index=args.projector_scale.index("P4") if "P4" in args.projector_scale else None,
     )
     return model
 

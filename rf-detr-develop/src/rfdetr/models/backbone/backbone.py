@@ -146,7 +146,7 @@ class Backbone(BackboneBase):
         """"""
         # (H, W, B, C)
         raw_feats = self.encoder(tensor_list.tensors)
-        feats = self.projector(raw_feats)
+        feats = self.projector(raw_feats, padding_mask=tensor_list.mask)
         # x: [(B, C, H, W)]
         out = []
         for feat in feats:
@@ -158,7 +158,7 @@ class Backbone(BackboneBase):
         cross_attn_out = None
         if self.cross_attn_projector is not None:
             cross_attn_out = []
-            cross_attn_feats = self.cross_attn_projector(raw_feats)
+            cross_attn_feats = self.cross_attn_projector(raw_feats, padding_mask=tensor_list.mask)
             for feat in cross_attn_feats:
                 m = tensor_list.mask
                 assert m is not None

@@ -102,13 +102,15 @@ class TestBuildModelCharacterization:
         assert model.group_detr == mc.group_detr
 
     def test_p4_eca_is_built_for_p4_projector_level(self) -> None:
-        """The model should attach ECA to the projected P4 level."""
+        """The model should attach ECA before C2f in the P4 projector branch."""
         mc = RFDETRBaseConfig(num_classes=80, pretrain_weights=None, device="cpu")
 
         model = build_model(_make_ns(mc=mc))
 
-        assert model.p4_feature_index == mc.projector_scale.index("P4")
-        assert model.p4_eca is not None
+        projector = model.backbone[0].projector
+        assert projector.p4_feature_index == mc.projector_scale.index("P4")
+        assert projector.p4_eca is not None
+        assert not hasattr(model, "p4_eca")
 
     def test_num_feature_levels_set_on_args(self) -> None:
         """build_model mutates args.num_feature_levels = len(projector_scale)."""

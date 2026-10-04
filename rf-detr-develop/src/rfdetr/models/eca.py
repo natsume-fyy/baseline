@@ -3,7 +3,7 @@
 # Copyright (c) 2025 Roboflow. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
-"""Efficient Channel Attention for projected backbone features."""
+"""Efficient Channel Attention for concatenated backbone features before fusion."""
 
 import math
 
@@ -38,7 +38,7 @@ class ECAAttention(nn.Module):
         """Reweight a ``(B, C, H, W)`` feature map channel by channel.
 
         Args:
-            features: Projected backbone feature map.
+            features: Concatenated backbone feature map before C2f fusion.
             padding_mask: Optional ``(B, H, W)`` mask where ``True`` marks padding.
 
         Returns:
