@@ -102,7 +102,7 @@ class TestBuildModelCharacterization:
         assert model.group_detr == mc.group_detr
 
     def test_p4_eca_is_built_for_p4_projector_level(self) -> None:
-        """The model should attach ECA before C2f in the P4 projector branch."""
+        """The model should attach ECA after C2f/LayerNorm in the P4 projector branch."""
         mc = RFDETRBaseConfig(num_classes=80, pretrain_weights=None, device="cpu")
 
         model = build_model(_make_ns(mc=mc))

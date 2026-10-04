@@ -327,8 +327,9 @@ GitHub Actions workflows in `.github/workflows/`:
 
 ## P4 ECA placement
 
-P4 channel attention lives in `MultiScaleProjector.p4_eca`: sampling/Concat -> ECA -> C2f -> LayerNorm.
-It uses the concatenated input channel count and excludes padding from pooling during normal forward.
+P4 channel attention lives in `MultiScaleProjector.p4_eca`: sampling/Concat -> C2f -> LayerNorm -> ECA -> Transformer.
+It uses the projector output channel count and excludes padding from pooling during normal forward.
 The main and optional cross-attention projectors each own their ECA; export uses the same projector path.
 Do not apply a second ECA in LWDETR. Existing C2f/LayerNorm state-dict keys remain unchanged.
-Old post-projector `p4_eca` weights are not migrated; train the newly placed attention parameters.
+Checkpoints from the pre-C2f ECA placement must not be used for exact training resumption; retrain the relocated attention.
+Legacy top-level `p4_eca` weights are not automatically migrated to the projector.

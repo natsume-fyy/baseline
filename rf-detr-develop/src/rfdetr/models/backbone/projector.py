@@ -191,7 +191,7 @@ class MultiScaleProjector(nn.Module):
         self.survival_prob = survival_prob
         self.force_drop_last_n_features = force_drop_last_n_features
         self.p4_feature_index = next((i for i, scale in enumerate(scale_factors) if scale == 1.0), None)
-        self.p4_eca = ECAAttention(sum(in_channels)) if self.p4_feature_index is not None else None
+        self.p4_eca = ECAAttention(out_channels) if self.p4_feature_index is not None else None
 
         stages_sampling = []
         stages = []
@@ -267,7 +267,7 @@ class MultiScaleProjector(nn.Module):
 
         Returns:
             Pyramid feature maps in scale_factors order. P4 uses ECA after
-            concatenation and before C2f fusion and LayerNorm.
+            C2f fusion and LayerNorm, before the Transformer.
         """
         num_features = len(x)
         if self.survival_prob < 1.0 and self.training:
@@ -292,12 +292,13 @@ class MultiScaleProjector(nn.Module):
                 feat_fuse = torch.cat(feat_fuse, dim=1)
             else:
                 feat_fuse = feat_fuse[0]
+            projected = stage(feat_fuse)
             if i == self.p4_feature_index and self.p4_eca is not None:
                 mask = None
                 if padding_mask is not None:
-                    mask = F.interpolate(padding_mask[None].float(), size=feat_fuse.shape[-2:]).to(torch.bool)[0]
-                feat_fuse = self.p4_eca(feat_fuse, mask)
-            results.append(stage(feat_fuse))
+                    mask = F.interpolate(padding_mask[None].float(), size=projected.shape[-2:]).to(torch.bool)[0]
+                projected = self.p4_eca(projected, mask)
+            results.append(projected)
         if self.use_extra_pool:
             results.append(F.max_pool2d(results[-1], kernel_size=1, stride=2, padding=0))
         return results
