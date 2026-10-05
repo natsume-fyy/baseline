@@ -159,10 +159,95 @@ class C2f(nn.Module):
         return self.cv2(torch.cat(y, 1))
 
 
+class CIB(nn.Module):
+    """Compact inverted block with depthwise spatial mixing and pointwise channel mixing.
+
+    Implements the standard 3x3 CIB topology described in YOLOv10
+    (https://arxiv.org/abs/2405.14458), using RF-DETR's ConvX normalization.
+    """
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        shortcut: bool = True,
+        e: float = 0.5,
+        act: Optional[str] = "silu",
+        layer_norm: bool = False,
+        rms_norm: bool = False,
+    ) -> None:
+        """Initialize the block.
+
+        Args:
+            c1: Number of input channels.
+            c2: Number of output channels.
+            shortcut: Add the input when input and output channels match.
+            e: Expansion factor; the intermediate width is twice int(c2 * e).
+            act: Activation name passed to ConvX.
+            layer_norm: Use pointwise LayerNorm instead of BatchNorm.
+            rms_norm: Forward the existing ConvX RMSNorm option.
+        """
+        super().__init__()
+        hidden = 2 * int(c2 * e)
+        self.cv1 = nn.Sequential(
+            ConvX(c1, c1, 3, groups=c1, act=act, layer_norm=layer_norm, rms_norm=rms_norm),
+            ConvX(c1, hidden, 1, act=act, layer_norm=layer_norm, rms_norm=rms_norm),
+            ConvX(hidden, hidden, 3, groups=hidden, act=act, layer_norm=layer_norm, rms_norm=rms_norm),
+            ConvX(hidden, c2, 1, act=act, layer_norm=layer_norm, rms_norm=rms_norm),
+            ConvX(c2, c2, 3, groups=c2, act=act, layer_norm=layer_norm, rms_norm=rms_norm),
+        )
+        self.add = shortcut and c1 == c2
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Mix features and optionally add a shape-compatible residual."""
+        out = self.cv1(x)
+        return x + out if self.add else out
+
+
+class C2fCIB(C2f):
+    """C2f fusion with standard CIB blocks in place of ordinary bottlenecks.
+
+    Keeps the outer cv1/cv2 checkpoint keys and shapes. Original C2f bottleneck
+    weights do not match the new inner blocks; load old checkpoints with
+    strict=False for fine-tuning, not for exact inference or training resume.
+    """
+
+    def __init__(
+        self,
+        c1: int,
+        c2: int,
+        n: int = 1,
+        shortcut: bool = False,
+        g: int = 1,
+        e: float = 0.5,
+        act: Optional[str] = "silu",
+        layer_norm: bool = False,
+        rms_norm: bool = False,
+    ) -> None:
+        """Initialize C2f-compatible fusion with compact inverted blocks.
+
+        Args:
+            c1: Number of input channels.
+            c2: Number of output channels.
+            n: Number of CIB blocks.
+            shortcut: Enable residual connections inside CIB blocks.
+            g: Retained for C2f API compatibility; CIB uses depthwise groups.
+            e: Expansion factor for the C2f branches.
+            act: Activation name passed to ConvX.
+            layer_norm: Use the project's LayerNorm inside convolutions.
+            rms_norm: Forward the existing ConvX RMSNorm option.
+        """
+        super().__init__(c1, c2, n, shortcut, g, e, act, layer_norm, rms_norm)
+        self.m = nn.ModuleList(
+            CIB(self.c, self.c, shortcut=shortcut, e=1.0, act=act, layer_norm=layer_norm, rms_norm=rms_norm)
+            for _ in range(n)
+        )
+
+
 class MultiScaleProjector(nn.Module):
     """This module implements MultiScaleProjector in :paper:`lwdetr`.
 
-    It creates pyramid features built on top of the input feature map.
+    It creates pyramid features using C2fCIB fusion at each output scale.
     """
 
     def __init__(
@@ -246,7 +331,7 @@ class MultiScaleProjector(nn.Module):
 
             in_dim = int(sum(in_channel // max(1, scale) for in_channel in in_channels))
             layers = [
-                C2f(in_dim, out_channels, num_blocks, layer_norm=layer_norm),
+                C2fCIB(in_dim, out_channels, num_blocks, layer_norm=layer_norm),
                 get_norm("LN", out_channels),
             ]
             layers = nn.Sequential(*layers)

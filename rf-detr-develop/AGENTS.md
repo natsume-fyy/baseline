@@ -207,6 +207,13 @@ uv run twine check --strict dist/*
 
 **Model Architecture:**
 
+- Local experiment: `MultiScaleProjector` uses `C2fCIB` (standard 3x3 CIB,
+  no large-kernel reparameterization) at every output scale, retaining the
+  existing LayerNorm setting, branch count, and output shape. `C2f` remains
+  available for baseline comparison. Original checkpoints only partially load:
+  outer fusion weights are reused, while new CIB parameters need fine-tuning.
+  Do not resume an old C2f optimizer checkpoint as a C2fCIB training run.
+  Offline checks: `python tests/models/backbone/test_projector_cib.py`.
 - RFDETR wrappers: `self.model` is the model context returned by `get_model()`
 - Underlying PyTorch module: `self.model.model`
 - Segmentation models return `pred_masks` as `torch.Tensor` or dict with keys `['spatial_features', 'query_features', 'bias']`
