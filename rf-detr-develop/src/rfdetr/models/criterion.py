@@ -17,6 +17,7 @@ import torch
 import torch.nn.functional as F  # noqa: N812
 from torch import nn
 
+from rfdetr.models.background_high_frequency import foreground_gate_loss
 from rfdetr.models.heads.keypoints import compute_l1_keypoint_loss
 from rfdetr.models.heads.segmentation import (
     calculate_uncertainty,
@@ -659,7 +660,7 @@ class SetCriterion(nn.Module):
         """
         group_detr = self.group_detr if self.training else 1
         outputs_without_aux = {
-            k: v for k, v in outputs.items() if k not in {"aux_outputs", "hbs_outputs"}
+            k: v for k, v in outputs.items() if k not in {"aux_outputs", "hbs_outputs", "bhf_gate_levels"}
         }
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -674,6 +675,8 @@ class SetCriterion(nn.Module):
 
         # Compute all the requested losses
         losses = {}
+        if "bhf_gate_levels" in outputs:
+            losses["loss_bhf_gate"] = foreground_gate_loss(outputs["bhf_gate_levels"], targets)
         for loss in self.losses:
             losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
 

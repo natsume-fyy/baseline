@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from rfdetr.models._defaults import MODEL_DEFAULTS, ModelDefaults
 from rfdetr.models._types import BuilderArgs
 from rfdetr.models.backbone import build_backbone
+from rfdetr.models.background_high_frequency import BackgroundHighFrequencySuppression
 
 # Backward-compat re-exports: loss functions that used to live in this module
 from rfdetr.models.criterion import (  # noqa: F401 — backward compat
@@ -135,6 +136,10 @@ class LWDETR(nn.Module):
         hbs_enabled: bool = False,
         hbs_reduction: int = 4,
         hbs_kernel_sizes: list[int] | None = None,
+        bhf_enabled: bool = False,
+        bhf_reduction: int = 4,
+        bhf_init_strength: float = 0.02,
+        bhf_max_strength: float = 0.5,
     ):
         """Initializes the model.
 
@@ -161,6 +166,12 @@ class LWDETR(nn.Module):
         nn.init.constant_(self.refpoint_embed.weight.data, 0)
 
         self.backbone = backbone
+        if bhf_enabled and (hbs_enabled or segmentation_head is not None or use_grouppose_keypoints):
+            raise ValueError("BHF requires detection-only mode with HBS disabled.")
+        self.bhf = (
+            BackgroundHighFrequencySuppression(hidden_dim, bhf_reduction, bhf_init_strength, bhf_max_strength)
+            if bhf_enabled else None
+        )
         self.aux_loss = aux_loss
         self.group_detr = group_detr
         self.hbs = (
@@ -477,7 +488,15 @@ class LWDETR(nn.Module):
             samples = nested_tensor_from_tensor_list(samples)
         features, poss, cross_attn_features = self.backbone(samples)
 
+        bhf_levels = []
+        if self.bhf is not None:
+            features, bhf_levels = self._suppress_background_high_frequency(features)
+            if cross_attn_features is not None:
+                cross_attn_features, cross_levels = self._suppress_background_high_frequency(cross_attn_features)
+                bhf_levels.extend(cross_levels)
         out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
+        if self.training and bhf_levels:
+            out["bhf_gate_levels"] = bhf_levels
         if self.training and self.hbs is not None and targets is not None:
             hbs_tensors = self.hbs(
                 [feature.tensors for feature in features],
@@ -505,6 +524,17 @@ class LWDETR(nn.Module):
                 hbs_cross_attn_features,
             )
         return out
+
+    def _suppress_background_high_frequency(
+        self, features: list[NestedTensor]
+    ) -> tuple[list[NestedTensor], list[tuple[torch.Tensor, torch.Tensor | None]]]:
+        """Suppress predicted-background high-pass features with shared weights across levels."""
+        suppressed, levels = [], []
+        for feature in features:
+            tensor, logits = self.bhf(feature.tensors, feature.mask)
+            suppressed.append(NestedTensor(tensor, feature.mask))
+            levels.append((logits, feature.mask))
+        return suppressed, levels
 
     def _forward_from_backbone_features(
         self,
@@ -663,6 +693,10 @@ class LWDETR(nn.Module):
 
     def forward_export(self, tensors):
         srcs, _, poss, cross_attn_srcs = self.backbone(tensors)
+        if self.bhf is not None:
+            srcs = [self.bhf(src)[0] for src in srcs]
+            if cross_attn_srcs is not None:
+                cross_attn_srcs = [self.bhf(src)[0] for src in cross_attn_srcs]
         # only use one group in inference
         refpoint_embed_weight = self.refpoint_embed.weight[: self.num_queries]
         query_feat_weight = self.query_feat.weight[: self.num_queries]
@@ -889,6 +923,10 @@ def build_model(args: "BuilderArgs"):
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
         hbs_enabled=getattr(args, "hbs_enabled", False),
         hbs_reduction=getattr(args, "hbs_reduction", 4),
+        bhf_enabled=getattr(args, "bhf_enabled", False),
+        bhf_reduction=getattr(args, "bhf_reduction", 4),
+        bhf_init_strength=getattr(args, "bhf_init_strength", 0.02),
+        bhf_max_strength=getattr(args, "bhf_max_strength", 0.5),
         hbs_kernel_sizes=[
             (int(math.log2({"P3": 8, "P4": 16, "P5": 32, "P6": 64}[level])) // 2 * 2) + 1
             for level in args.projector_scale
@@ -926,6 +964,8 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
         weight_dict.update({f"{key}_hbs": value * hbs_loss_coef for key, value in tuple(weight_dict.items())})
 
     losses = ["labels", "boxes", "cardinality"]
+    if getattr(args, "bhf_enabled", False):
+        weight_dict["loss_bhf_gate"] = getattr(args, "bhf_loss_coef", 0.1)
     if args.segmentation_head:
         losses.append("masks")
     if has_keypoints:
