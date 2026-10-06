@@ -47,6 +47,7 @@ from rfdetr.models.hbs import HBS
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
 from rfdetr.models.postprocess import PostProcess
+from rfdetr.models.target_low_frequency import TargetLowFrequencyEnhancement
 from rfdetr.models.transformer import build_transformer
 from rfdetr.utilities.logger import get_logger
 from rfdetr.utilities.tensors import NestedTensor, nested_tensor_from_tensor_list
@@ -135,6 +136,10 @@ class LWDETR(nn.Module):
         hbs_enabled: bool = False,
         hbs_reduction: int = 4,
         hbs_kernel_sizes: list[int] | None = None,
+        tlf_enabled: bool = False,
+        tlf_reduction: int = 4,
+        tlf_init_gain: float = 0.02,
+        tlf_max_gain: float = 0.5,
     ):
         """Initializes the model.
 
@@ -161,6 +166,12 @@ class LWDETR(nn.Module):
         nn.init.constant_(self.refpoint_embed.weight.data, 0)
 
         self.backbone = backbone
+        if tlf_enabled and (hbs_enabled or segmentation_head is not None or use_grouppose_keypoints):
+            raise ValueError("TLF requires detection-only mode with HBS disabled.")
+        self.tlf = (
+            TargetLowFrequencyEnhancement(hidden_dim, tlf_reduction, tlf_init_gain, tlf_max_gain)
+            if tlf_enabled else None
+        )
         self.aux_loss = aux_loss
         self.group_detr = group_detr
         self.hbs = (
@@ -477,7 +488,15 @@ class LWDETR(nn.Module):
             samples = nested_tensor_from_tensor_list(samples)
         features, poss, cross_attn_features = self.backbone(samples)
 
+        tlf_levels = []
+        if self.tlf is not None:
+            features, tlf_levels = self._enhance_target_low_frequency(features)
+            if cross_attn_features is not None:
+                cross_attn_features, cross_levels = self._enhance_target_low_frequency(cross_attn_features)
+                tlf_levels.extend(cross_levels)
         out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
+        if self.training and tlf_levels:
+            out["tlf_gate_levels"] = tlf_levels
         if self.training and self.hbs is not None and targets is not None:
             hbs_tensors = self.hbs(
                 [feature.tensors for feature in features],
@@ -505,6 +524,17 @@ class LWDETR(nn.Module):
                 hbs_cross_attn_features,
             )
         return out
+
+    def _enhance_target_low_frequency(
+        self, features: list[NestedTensor]
+    ) -> tuple[list[NestedTensor], list[tuple[torch.Tensor, torch.Tensor | None]]]:
+        """Enhance projected features before the transformer, sharing weights across scales."""
+        enhanced, levels = [], []
+        for feature in features:
+            tensor, logits = self.tlf(feature.tensors, feature.mask)
+            enhanced.append(NestedTensor(tensor, feature.mask))
+            levels.append((logits, feature.mask))
+        return enhanced, levels
 
     def _forward_from_backbone_features(
         self,
@@ -663,6 +693,10 @@ class LWDETR(nn.Module):
 
     def forward_export(self, tensors):
         srcs, _, poss, cross_attn_srcs = self.backbone(tensors)
+        if self.tlf is not None:
+            srcs = [self.tlf(src)[0] for src in srcs]
+            if cross_attn_srcs is not None:
+                cross_attn_srcs = [self.tlf(src)[0] for src in cross_attn_srcs]
         # only use one group in inference
         refpoint_embed_weight = self.refpoint_embed.weight[: self.num_queries]
         query_feat_weight = self.query_feat.weight[: self.num_queries]
@@ -889,6 +923,10 @@ def build_model(args: "BuilderArgs"):
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
         hbs_enabled=getattr(args, "hbs_enabled", False),
         hbs_reduction=getattr(args, "hbs_reduction", 4),
+        tlf_enabled=getattr(args, "tlf_enabled", False),
+        tlf_reduction=getattr(args, "tlf_reduction", 4),
+        tlf_init_gain=getattr(args, "tlf_init_gain", 0.02),
+        tlf_max_gain=getattr(args, "tlf_max_gain", 0.5),
         hbs_kernel_sizes=[
             (int(math.log2({"P3": 8, "P4": 16, "P5": 32, "P6": 64}[level])) // 2 * 2) + 1
             for level in args.projector_scale
@@ -926,6 +964,8 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
         weight_dict.update({f"{key}_hbs": value * hbs_loss_coef for key, value in tuple(weight_dict.items())})
 
     losses = ["labels", "boxes", "cardinality"]
+    if getattr(args, "tlf_enabled", False):
+        weight_dict["loss_tlf_gate"] = getattr(args, "tlf_loss_coef", 0.1)
     if args.segmentation_head:
         losses.append("masks")
     if has_keypoints:

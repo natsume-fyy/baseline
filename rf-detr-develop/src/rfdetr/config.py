@@ -520,6 +520,10 @@ class ModelConfig(BaseConfig):
     dual_projector_kp_only: bool = False
     hbs_enabled: bool = False
     hbs_reduction: int = Field(default=4, ge=1)
+    tlf_enabled: bool = False
+    tlf_reduction: int = Field(default=4, ge=1)
+    tlf_init_gain: float = Field(default=0.02, gt=0.0, allow_inf_nan=False)
+    tlf_max_gain: float = Field(default=0.5, gt=0.0, le=1.0)
     num_keypoints_per_class: list[int] = Field(default_factory=list)
     num_decoder_registers: int = 0
     mask_downsample_ratio: int = 4
@@ -535,17 +539,22 @@ class ModelConfig(BaseConfig):
             "without inspecting ``pretrain_weights``."
         ),
     )
-    
+
     @model_validator(mode="after")
     def _validate_hbs_task(self) -> "ModelConfig":
-        """Restrict the current HBS integration to bounding-box detection.
+        """Validate detection-only feature enhancement options and bounded TLF gains.
 
-        HBS is implemented as an auxiliary detection branch. Segmentation and keypoint losses require additional
-        task-specific masking semantics and are intentionally rejected instead of silently applying an unvalidated
-        training objective.
+        HBS and TLF use box-based supervision and are mutually exclusive in the isolated
+        enhancement experiment. Segmentation and keypoint tasks need separate validation.
         """
         if self.hbs_enabled and (self.segmentation_head or self.use_grouppose_keypoints):
             raise ValueError("HBS currently supports detection models only.")
+        if self.tlf_init_gain >= self.tlf_max_gain:
+            raise ValueError("tlf_init_gain must be less than tlf_max_gain")
+        if self.tlf_enabled and (self.segmentation_head or self.use_grouppose_keypoints):
+            raise ValueError("TLF currently supports detection models only.")
+        if self.tlf_enabled and self.hbs_enabled:
+            raise ValueError("Disable HBS for the isolated target low-frequency enhancement experiment.")
         return self
 
     @model_validator(mode="after")
@@ -1057,6 +1066,7 @@ class TrainConfig(BaseConfig):
     drop_path: float = 0.0
     cls_loss_coef: float = 1.0
     hbs_loss_coef: float = Field(default=0.25, ge=0.0)
+    tlf_loss_coef: float = Field(default=0.1, ge=0.0)
     # Detection-vs-keypoint distinction is derived by callers via `include_keypoints`, not
     # stored on this field. See rfdetr.datasets.transforms.AlbumentationsWrapper.from_config
     # for the None/[]/[...] tri-state contract applied at the augmentation-pipeline boundary.
