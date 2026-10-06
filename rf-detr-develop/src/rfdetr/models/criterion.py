@@ -24,6 +24,7 @@ from rfdetr.models.heads.segmentation import (
     point_sample,
 )
 from rfdetr.models.math import accuracy
+from rfdetr.models.target_guided_frequency import foreground_gate_loss
 from rfdetr.utilities import box_ops
 from rfdetr.utilities.distributed import get_world_size, is_dist_avail_and_initialized
 
@@ -659,7 +660,7 @@ class SetCriterion(nn.Module):
         """
         group_detr = self.group_detr if self.training else 1
         outputs_without_aux = {
-            k: v for k, v in outputs.items() if k not in {"aux_outputs", "hbs_outputs"}
+            k: v for k, v in outputs.items() if k not in {"aux_outputs", "hbs_outputs", "tgf_gate_levels"}
         }
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -674,6 +675,8 @@ class SetCriterion(nn.Module):
 
         # Compute all the requested losses
         losses = {}
+        if "tgf_gate_levels" in outputs:
+            losses["loss_tgf_gate"] = foreground_gate_loss(outputs["tgf_gate_levels"], targets)
         for loss in self.losses:
             losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
 

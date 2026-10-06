@@ -520,6 +520,11 @@ class ModelConfig(BaseConfig):
     dual_projector_kp_only: bool = False
     hbs_enabled: bool = False
     hbs_reduction: int = Field(default=4, ge=1)
+    tgf_enabled: bool = False
+    tgf_reduction: int = Field(default=4, ge=1)
+    tgf_init_gain: float = Field(default=0.02, gt=0.0, allow_inf_nan=False)
+    tgf_max_gain: float = Field(default=0.5, gt=0.0, le=1.0)
+    tgf_bg_ratio: float = Field(default=0.25, ge=0.0, le=0.5)
     num_keypoints_per_class: list[int] = Field(default_factory=list)
     num_decoder_registers: int = 0
     mask_downsample_ratio: int = 4
@@ -546,6 +551,15 @@ class ModelConfig(BaseConfig):
         """
         if self.hbs_enabled and (self.segmentation_head or self.use_grouppose_keypoints):
             raise ValueError("HBS currently supports detection models only.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_tgf(self) -> "ModelConfig":
+        """Validate detection-only target-guided frequency adjustment and gain bounds."""
+        if self.tgf_init_gain >= self.tgf_max_gain:
+            raise ValueError("tgf_init_gain must be less than tgf_max_gain")
+        if self.tgf_enabled and (self.hbs_enabled or self.segmentation_head or self.use_grouppose_keypoints):
+            raise ValueError("TGF requires detection-only mode with HBS disabled.")
         return self
 
     @model_validator(mode="after")
@@ -1057,6 +1071,7 @@ class TrainConfig(BaseConfig):
     drop_path: float = 0.0
     cls_loss_coef: float = 1.0
     hbs_loss_coef: float = Field(default=0.25, ge=0.0)
+    tgf_loss_coef: float = Field(default=0.1, ge=0.0)
     # Detection-vs-keypoint distinction is derived by callers via `include_keypoints`, not
     # stored on this field. See rfdetr.datasets.transforms.AlbumentationsWrapper.from_config
     # for the None/[]/[...] tri-state contract applied at the augmentation-pipeline boundary.

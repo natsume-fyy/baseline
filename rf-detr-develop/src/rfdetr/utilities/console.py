@@ -114,6 +114,17 @@ def _render_overall_merged(title_pfx: str, overall: dict[str, float], max_dets: 
             ],
         ),
     ]
+    # Keep old callers compatible; absent/undefined area metrics render as dashes.
+    for label, prefix in (("AP by size (50:95)", "AP"), ("EMA AP by size (50:95)", "EMA AP")):
+        if any(f"{prefix} {size}" in overall for size in ("small", "medium", "large")):
+            columns = [
+                (size.capitalize(), _fmt(overall.get(f"{prefix} {size}", -1.0)))
+                for size in ("small", "medium", "large")
+            ]
+            groups.insert(
+                1 if prefix == "AP" else 2,
+                (label, columns),
+            )
     if "segm mAP 50:95" in overall:
         groups.append(
             (

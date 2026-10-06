@@ -4,7 +4,7 @@ from visualize_hazydet import generate_representative_visualization
 
 
 DATASET_DIR = "/root/autodl-tmp/HazyDet_RFDETR"
-OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_hbs"
+OUTPUT_DIR = "/root/autodl-tmp/rf-detr/output/hazydet_small_tgf"
 VISUALIZE_AFTER_TRAINING = True
 SAMPLES_PER_GROUP = 3
 FIXED_SAMPLE_FILE = "/root/autodl-tmp/rf-detr/output/hazydet_fixed_samples_valid_3_per_group.json"
@@ -14,8 +14,12 @@ def main():
 
     # model = RFDETRSmall()
     model = RFDETRSmall(
-        hbs_enabled=True,
-        hbs_reduction=4,
+        hbs_enabled=False,
+        tgf_enabled=True,
+        tgf_reduction=4,
+        tgf_init_gain=0.02,
+        tgf_max_gain=0.5,
+        tgf_bg_ratio=0.25,
     )
 
     model.train(
@@ -29,7 +33,7 @@ def main():
 
         lr=1e-3,
 
-        hbs_loss_coef=0.25,
+        tgf_loss_coef=0.1,
 
         device="cuda",
 
