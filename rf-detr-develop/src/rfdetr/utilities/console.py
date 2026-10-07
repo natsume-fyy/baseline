@@ -114,6 +114,17 @@ def _render_overall_merged(title_pfx: str, overall: dict[str, float], max_dets: 
             ],
         ),
     ]
+    for prefix, label in (("", "AP by size (50:95)"), ("EMA ", "EMA AP by size (50:95)")):
+        if any(f"{prefix}AP {size}" in overall for size in ("small", "medium", "large")):
+            groups.append(
+                (
+                    label,
+                    [
+                        (size, _fmt(overall.get(f"{prefix}AP {size}", float("nan"))))
+                        for size in ("small", "medium", "large")
+                    ],
+                )
+            )
     if "segm mAP 50:95" in overall:
         groups.append(
             (
