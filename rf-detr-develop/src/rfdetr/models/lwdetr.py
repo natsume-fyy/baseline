@@ -46,6 +46,7 @@ from rfdetr.models.heads.segmentation import SegmentationHead
 from rfdetr.models.hbs import HBS
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
+from rfdetr.models.mid_low_frequency import MidLowFrequencyFusion
 from rfdetr.models.postprocess import PostProcess
 from rfdetr.models.transformer import build_transformer
 from rfdetr.utilities.logger import get_logger
@@ -135,6 +136,8 @@ class LWDETR(nn.Module):
         hbs_enabled: bool = False,
         hbs_reduction: int = 4,
         hbs_kernel_sizes: list[int] | None = None,
+        mlf_enabled: bool = False,
+        mlf_reduction: int = 4,
     ):
         """Initializes the model.
 
@@ -163,6 +166,9 @@ class LWDETR(nn.Module):
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.group_detr = group_detr
+        if mlf_enabled and (hbs_enabled or segmentation_head is not None or use_grouppose_keypoints):
+            raise ValueError("Mid-low frequency fusion requires detection mode with HBS disabled.")
+        self.mlf = MidLowFrequencyFusion(hidden_dim, mlf_reduction) if mlf_enabled else None
         self.hbs = (
             HBS(
                 channels=hidden_dim,
@@ -476,6 +482,12 @@ class LWDETR(nn.Module):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
         features, poss, cross_attn_features = self.backbone(samples)
+        if self.mlf is not None:
+            features = [NestedTensor(self.mlf(f.tensors, f.mask), f.mask) for f in features]
+            if cross_attn_features is not None:
+                cross_attn_features = [
+                    NestedTensor(self.mlf(f.tensors, f.mask), f.mask) for f in cross_attn_features
+                ]
 
         out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
         if self.training and self.hbs is not None and targets is not None:
@@ -663,6 +675,10 @@ class LWDETR(nn.Module):
 
     def forward_export(self, tensors):
         srcs, _, poss, cross_attn_srcs = self.backbone(tensors)
+        if self.mlf is not None:
+            srcs = [self.mlf(src) for src in srcs]
+            if cross_attn_srcs is not None:
+                cross_attn_srcs = [self.mlf(src) for src in cross_attn_srcs]
         # only use one group in inference
         refpoint_embed_weight = self.refpoint_embed.weight[: self.num_queries]
         query_feat_weight = self.query_feat.weight[: self.num_queries]
@@ -887,6 +903,8 @@ def build_model(args: "BuilderArgs"):
         use_grouppose_keypoints=getattr(args, "use_grouppose_keypoints", False),
         num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
+        mlf_enabled=getattr(args, "mlf_enabled", False),
+        mlf_reduction=getattr(args, "mlf_reduction", 4),
         hbs_enabled=getattr(args, "hbs_enabled", False),
         hbs_reduction=getattr(args, "hbs_reduction", 4),
         hbs_kernel_sizes=[

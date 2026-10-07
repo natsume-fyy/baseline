@@ -518,6 +518,8 @@ class ModelConfig(BaseConfig):
     grouppose_keypoint_dim_downscale: int = 1
     dual_projector: bool = False
     dual_projector_kp_only: bool = False
+    mlf_enabled: bool = False
+    mlf_reduction: int = Field(default=4, ge=1)
     hbs_enabled: bool = False
     hbs_reduction: int = Field(default=4, ge=1)
     num_keypoints_per_class: list[int] = Field(default_factory=list)
@@ -544,6 +546,8 @@ class ModelConfig(BaseConfig):
         task-specific masking semantics and are intentionally rejected instead of silently applying an unvalidated
         training objective.
         """
+        if self.mlf_enabled and (self.hbs_enabled or self.segmentation_head or self.use_grouppose_keypoints):
+            raise ValueError("Mid-low frequency fusion requires detection mode with HBS disabled.")
         if self.hbs_enabled and (self.segmentation_head or self.use_grouppose_keypoints):
             raise ValueError("HBS currently supports detection models only.")
         return self
