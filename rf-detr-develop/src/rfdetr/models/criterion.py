@@ -659,7 +659,7 @@ class SetCriterion(nn.Module):
         """
         group_detr = self.group_detr if self.training else 1
         outputs_without_aux = {
-            k: v for k, v in outputs.items() if k not in {"aux_outputs", "hbs_outputs"}
+            k: v for k, v in outputs.items() if k not in {"aux_outputs", "hbs_outputs", "tmlf_outputs"}
         }
 
         # Retrieve the matching between the outputs of the last layer and the targets
@@ -701,6 +701,10 @@ class SetCriterion(nn.Module):
                 l_dict = self.get_loss(loss, enc_outputs, targets, indices, num_boxes, **kwargs)
                 l_dict = {k + "_enc": v for k, v in l_dict.items()}
                 losses.update(l_dict)
+
+        if "tmlf_outputs" in outputs:
+            auxiliary_losses = self.forward(outputs["tmlf_outputs"], targets, num_boxes=num_boxes)
+            losses.update({f"{key}_tmlf": value for key, value in auxiliary_losses.items()})
 
         if "hbs_outputs" in outputs:
             hbs_losses = self.forward(outputs["hbs_outputs"], targets, num_boxes=num_boxes)

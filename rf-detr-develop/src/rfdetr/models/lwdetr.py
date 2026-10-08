@@ -47,6 +47,7 @@ from rfdetr.models.hbs import HBS
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
 from rfdetr.models.postprocess import PostProcess
+from rfdetr.models.target_mid_low_frequency import TargetMidLowFrequency
 from rfdetr.models.transformer import build_transformer
 from rfdetr.utilities.logger import get_logger
 from rfdetr.utilities.tensors import NestedTensor, nested_tensor_from_tensor_list
@@ -135,6 +136,8 @@ class LWDETR(nn.Module):
         hbs_enabled: bool = False,
         hbs_reduction: int = 4,
         hbs_kernel_sizes: list[int] | None = None,
+        tmlf_enabled: bool = False,
+        tmlf_reduction: int = 4,
     ):
         """Initializes the model.
 
@@ -163,6 +166,9 @@ class LWDETR(nn.Module):
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.group_detr = group_detr
+        if tmlf_enabled and (hbs_enabled or segmentation_head is not None or use_grouppose_keypoints):
+            raise ValueError("TMLF requires detection mode with HBS disabled.")
+        self.tmlf = TargetMidLowFrequency(hidden_dim, tmlf_reduction) if tmlf_enabled else None
         self.hbs = (
             HBS(
                 channels=hidden_dim,
@@ -478,6 +484,19 @@ class LWDETR(nn.Module):
         features, poss, cross_attn_features = self.backbone(samples)
 
         out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
+        if self.training and self.tmlf is not None and targets is not None:
+            # Keep the original main-path outputs; the auxiliary pass shares the head.
+            auxiliary_features = [
+                NestedTensor(self.tmlf(f.tensors, targets, f.mask), f.mask) for f in features
+            ]
+            auxiliary_cross_features = None
+            if cross_attn_features is not None:
+                auxiliary_cross_features = [
+                    NestedTensor(self.tmlf(f.tensors, targets, f.mask), f.mask) for f in cross_attn_features
+                ]
+            out["tmlf_outputs"] = self._forward_from_backbone_features(
+                samples, auxiliary_features, poss, auxiliary_cross_features
+            )
         if self.training and self.hbs is not None and targets is not None:
             hbs_tensors = self.hbs(
                 [feature.tensors for feature in features],
@@ -887,6 +906,8 @@ def build_model(args: "BuilderArgs"):
         use_grouppose_keypoints=getattr(args, "use_grouppose_keypoints", False),
         num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
+        tmlf_enabled=getattr(args, "tmlf_enabled", False),
+        tmlf_reduction=getattr(args, "tmlf_reduction", 4),
         hbs_enabled=getattr(args, "hbs_enabled", False),
         hbs_reduction=getattr(args, "hbs_reduction", 4),
         hbs_kernel_sizes=[
@@ -924,6 +945,12 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
     if getattr(args, "hbs_enabled", False):
         hbs_loss_coef = getattr(args, "hbs_loss_coef", 0.25)
         weight_dict.update({f"{key}_hbs": value * hbs_loss_coef for key, value in tuple(weight_dict.items())})
+
+    if getattr(args, "tmlf_enabled", False):
+        coefficient = getattr(args, "tmlf_loss_coef", 0.25)
+        if not math.isfinite(coefficient) or coefficient <= 0:
+            raise ValueError("tmlf_loss_coef must be finite and positive; disable tmlf_enabled for baseline.")
+        weight_dict.update({f"{key}_tmlf": value * coefficient for key, value in tuple(weight_dict.items())})
 
     losses = ["labels", "boxes", "cardinality"]
     if args.segmentation_head:
