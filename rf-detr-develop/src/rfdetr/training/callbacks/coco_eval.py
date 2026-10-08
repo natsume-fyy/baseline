@@ -512,6 +512,15 @@ class COCOEvalCallback(Callback):
         trainer.callback_metrics[f"{split}/mAP_75"] = metrics[f"{pfx}map_75"].detach().cpu()
         trainer.callback_metrics[f"{split}/mAR"] = metrics[mar_key].detach().cpu()
 
+        # Reuse COCO size-specific bounding-box AP at IoU 0.50:0.95.
+        for size in ("small", "medium", "large"):
+            value = metrics.get(f"{pfx}map_{size}")
+            if value is not None:
+                overall[f"AP {size}"] = float(value)
+                log_key = f"{split}/AP_{size}"
+                pl_module.log(log_key, value, logger=True, on_step=False, on_epoch=True)
+                trainer.callback_metrics[log_key] = value.detach().cpu()
+
         # EMA metrics — computed from a separate EMA forward pass accumulated in
         # on_validation_batch_end, so base and EMA values are independent.  The EMA
         # compute() triggers a cross-rank metric sync, so it must be issued by EVERY rank
@@ -535,6 +544,13 @@ class COCOEvalCallback(Callback):
             trainer.callback_metrics[f"{split}/ema_mAP_50_95"] = ema_metrics[f"{pfx}map"].detach().cpu()
             trainer.callback_metrics[f"{split}/ema_mAP_50"] = ema_metrics[f"{pfx}map_50"].detach().cpu()
             trainer.callback_metrics[f"{split}/ema_mAR"] = ema_metrics[mar_key].detach().cpu()
+            for size in ("small", "medium", "large"):
+                value = ema_metrics.get(f"{pfx}map_{size}")
+                if value is not None:
+                    overall[f"EMA AP {size}"] = float(value)
+                    log_key = f"{split}/ema_AP_{size}"
+                    pl_module.log(log_key, value, logger=True, on_step=False, on_epoch=True)
+                    trainer.callback_metrics[log_key] = value.detach().cpu()
             if self._use_segm_metrics:
                 pl_module.log(
                     f"{split}/ema_segm_mAP_50_95", ema_metrics["segm_map"], logger=True, on_step=False, on_epoch=True

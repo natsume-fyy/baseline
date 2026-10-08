@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 from rfdetr.models._defaults import MODEL_DEFAULTS, ModelDefaults
 from rfdetr.models._types import BuilderArgs
 from rfdetr.models.backbone import build_backbone
+from rfdetr.models.caa import CAAAttention
 
 # Backward-compat re-exports: loss functions that used to live in this module
 from rfdetr.models.criterion import (  # noqa: F401 — backward compat
@@ -131,6 +132,7 @@ class LWDETR(nn.Module):
         use_grouppose_keypoints=False,
         num_keypoints_per_class: list[int] | None = None,
         grouppose_keypoint_dim_downscale: int = 1,
+        caa_enabled: bool = False,
     ):
         """Initializes the model.
 
@@ -156,6 +158,9 @@ class LWDETR(nn.Module):
         self.query_feat = nn.Embedding(num_queries * group_detr, hidden_dim)
         nn.init.constant_(self.refpoint_embed.weight.data, 0)
 
+        if caa_enabled and (segmentation_head is not None or use_grouppose_keypoints):
+            raise ValueError("CAA auxiliary branch currently supports bounding-box detection only.")
+        self.caa = CAAAttention(hidden_dim) if caa_enabled else None
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.group_detr = group_detr
@@ -463,7 +468,17 @@ class LWDETR(nn.Module):
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
         features, poss, cross_attn_features = self.backbone(samples)
-        return self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
+        out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
+        if self.training and self.caa is not None and targets is not None:
+            # Original features and predictions are retained on the main path.
+            auxiliary_features = [NestedTensor(self.caa(f.tensors, f.mask), f.mask) for f in features]
+            auxiliary_cross = None
+            if cross_attn_features is not None:
+                auxiliary_cross = [NestedTensor(self.caa(f.tensors, f.mask), f.mask) for f in cross_attn_features]
+            out["caa_outputs"] = self._forward_from_backbone_features(
+                samples, auxiliary_features, poss, auxiliary_cross
+            )
+        return out
 
     def _forward_from_backbone_features(
         self,
@@ -846,6 +861,7 @@ def build_model(args: "BuilderArgs"):
         use_grouppose_keypoints=getattr(args, "use_grouppose_keypoints", False),
         num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
+        caa_enabled=getattr(args, "caa_enabled", False),
     )
     return model
 
@@ -873,6 +889,12 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
         if args.two_stage:
             aux_weight_dict.update({k + "_enc": v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
+
+    if getattr(args, "caa_enabled", False):
+        coefficient = getattr(args, "caa_loss_coef", 0.25)
+        if not math.isfinite(coefficient) or coefficient <= 0:
+            raise ValueError("caa_loss_coef must be finite and positive; disable caa_enabled for baseline.")
+        weight_dict.update({f"{key}_caa": value * coefficient for key, value in tuple(weight_dict.items())})
 
     losses = ["labels", "boxes", "cardinality"]
     if args.segmentation_head:

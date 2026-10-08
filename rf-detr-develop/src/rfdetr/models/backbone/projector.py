@@ -18,7 +18,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 
-from rfdetr.models.eca import ECAAttention
 
 
 class LayerNorm(nn.Module):
@@ -190,8 +189,6 @@ class MultiScaleProjector(nn.Module):
         self.scale_factors = scale_factors
         self.survival_prob = survival_prob
         self.force_drop_last_n_features = force_drop_last_n_features
-        self.p4_feature_index = next((i for i, scale in enumerate(scale_factors) if scale == 1.0), None)
-        self.p4_eca = ECAAttention(out_channels) if self.p4_feature_index is not None else None
 
         stages_sampling = []
         stages = []
@@ -263,11 +260,10 @@ class MultiScaleProjector(nn.Module):
         """
         Args:
             x: Encoder feature maps, each shaped (N, C, H, W).
-            padding_mask: Optional image mask; True marks padding excluded from ECA pooling.
+            padding_mask: Optional image mask, retained for caller compatibility.
 
         Returns:
-            Pyramid feature maps in scale_factors order. P4 uses ECA after
-            C2f fusion and LayerNorm, before the Transformer.
+            Pyramid feature maps after C2f fusion and LayerNorm, without attention.
         """
         num_features = len(x)
         if self.survival_prob < 1.0 and self.training:
@@ -293,11 +289,6 @@ class MultiScaleProjector(nn.Module):
             else:
                 feat_fuse = feat_fuse[0]
             projected = stage(feat_fuse)
-            if i == self.p4_feature_index and self.p4_eca is not None:
-                mask = None
-                if padding_mask is not None:
-                    mask = F.interpolate(padding_mask[None].float(), size=projected.shape[-2:]).to(torch.bool)[0]
-                projected = self.p4_eca(projected, mask)
             results.append(projected)
         if self.use_extra_pool:
             results.append(F.max_pool2d(results[-1], kernel_size=1, stride=2, padding=0))

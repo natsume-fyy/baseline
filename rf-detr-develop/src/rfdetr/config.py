@@ -522,6 +522,7 @@ class ModelConfig(BaseConfig):
     num_decoder_registers: int = 0
     mask_downsample_ratio: int = 4
     backbone_lora: bool = False
+    caa_enabled: bool = False
     freeze_encoder: bool = False
     license: str = "Apache-2.0"
     model_name: str | None = Field(
@@ -1031,6 +1032,7 @@ class TrainConfig(BaseConfig):
     auto_batch_ema_headroom: float = 0.7  # scale safe batch by this when use_ema=True (EMA uses extra memory)
     epochs: int = 100
     resume: PathLikeStr | None = None
+    caa_loss_coef: float = Field(default=0.25, gt=0.0, allow_inf_nan=False)
     ema_decay: float = 0.993
     ema_tau: int = 100
     lr_drop: int = 100

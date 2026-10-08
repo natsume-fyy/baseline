@@ -28,6 +28,7 @@ _MC_NAMESPACE_FIELDS = {
     "dec_n_points",
     "device",
     "encoder",
+    "caa_enabled",
     "freeze_encoder",
     "gradient_checkpointing",
     "group_detr",
