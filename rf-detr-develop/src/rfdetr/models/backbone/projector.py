@@ -223,10 +223,10 @@ class ImprovedFFTKernel(nn.Module):
 
 
 class MFFF(nn.Module):
-    """UAV-DETR partial-channel frequency enhancement before projector fusion.
+    """UAV-DETR partial-channel frequency enhancement for spatial feature maps.
 
     Args:
-        dim: Number of concatenated feature channels.
+        dim: Number of input and output feature channels.
         e: Fraction of channels processed by the frequency kernel.
     """
 
@@ -261,7 +261,6 @@ class MultiScaleProjector(nn.Module):
         rms_norm: bool = False,
         survival_prob: float = 1.0,
         force_drop_last_n_features: int = 0,
-        mfff_enabled: bool = False,
     ) -> None:
         """
         Args:
@@ -269,7 +268,6 @@ class MultiScaleProjector(nn.Module):
             out_channels: Number of channels in the output feature maps.
             scale_factors: List of scaling factors to upsample or downsample
                 the input features for creating pyramid features.
-            mfff_enabled: Enhance concatenated features before C2f at each scale.
         """
         super(MultiScaleProjector, self).__init__()
 
@@ -279,7 +277,6 @@ class MultiScaleProjector(nn.Module):
 
         stages_sampling = []
         stages = []
-        frequency_modules = []
         # use_bias = norm == ""
         self.use_extra_pool = False
         for scale in scale_factors:
@@ -334,7 +331,6 @@ class MultiScaleProjector(nn.Module):
             stages_sampling[-1] = nn.ModuleList(stages_sampling[-1])
 
             in_dim = int(sum(in_channel // max(1, scale) for in_channel in in_channels))
-            frequency_modules.append(MFFF(in_dim) if mfff_enabled else nn.Identity())
             layers = [
                 C2f(in_dim, out_channels, num_blocks, layer_norm=layer_norm),
                 get_norm("LN", out_channels),
@@ -344,8 +340,6 @@ class MultiScaleProjector(nn.Module):
 
         self.stages_sampling = nn.ModuleList(stages_sampling)
         self.stages = nn.ModuleList(stages)
-        # Keep existing stages.* keys unchanged when loading pretrained checkpoints.
-        self.mfff = nn.ModuleList(frequency_modules)
 
     def forward(self, x):
         """
@@ -381,7 +375,7 @@ class MultiScaleProjector(nn.Module):
                 feat_fuse = torch.cat(feat_fuse, dim=1)
             else:
                 feat_fuse = feat_fuse[0]
-            results.append(stage(self.mfff[i](feat_fuse)))
+            results.append(stage(feat_fuse))
         if self.use_extra_pool:
             results.append(F.max_pool2d(results[-1], kernel_size=1, stride=2, padding=0))
         return results

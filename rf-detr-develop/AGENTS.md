@@ -207,10 +207,11 @@ uv run twine check --strict dist/*
 
 **Model Architecture:**
 
-- Optional `ModelConfig.mfff_enabled` enables UAV-DETR MFFF in each projector scale:
-  concatenated encoder features -> MFFF -> existing C2f -> LayerNorm. Default is false.
-  `projector.mfff.*` stores new parameters separately so pretrained `stages.*` keys stay compatible.
-  FFT operations use FP32 under AMP; training, inference and backbone export forward share the projector.
+- Optional `ModelConfig.mfff_enabled` enables UAV-DETR MFFF after each MultiScaleProjector output:
+  concatenated encoder features -> C2f -> LayerNorm -> MFFF -> Transformer. Default is false.
+  `backbone.0.mfff.*` stores new parameters separately so pretrained projector keys stay compatible.
+  Dual-projector models use separate `cross_attn_mfff` modules. MFFF uses the projector output channel count.
+  FFT operations use FP32 under AMP; both normal and export backbone forwards apply MFFF.
   FFT-based ONNX/TensorRT export is not validated. `train_hazydet.py` enables MFFF and disables HBS.
 
 - RFDETR wrappers: `self.model` is the model context returned by `get_model()`

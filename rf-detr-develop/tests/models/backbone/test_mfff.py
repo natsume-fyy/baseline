@@ -3,12 +3,14 @@
 # Copyright (c) 2025 Roboflow. All Rights Reserved.
 # Licensed under the Apache License, Version 2.0 [see LICENSE for details]
 # ------------------------------------------------------------------------
-"""Regression tests for frequency enhancement in the projector."""
+"""Regression tests for frequency enhancement after the projector."""
 
 import pytest
 import torch
 
-from rfdetr.models.backbone.projector import MFFF, MultiScaleProjector
+from rfdetr.models.backbone.backbone import Backbone
+from rfdetr.models.backbone.projector import MFFF
+from rfdetr.utilities.tensors import NestedTensor
 
 
 @pytest.mark.parametrize(
@@ -28,30 +30,70 @@ def test_mfff_shape_and_gradients(shape: tuple[int, ...]) -> None:
         assert torch.isfinite(parameter.grad).all(), name
 
 
-def test_projector_mfff_order_and_pretrained_keys() -> None:
-    """Enhance concatenated features before C2f without renaming pretrained layers."""
-    kwargs = dict(in_channels=[16, 16], out_channels=16, scale_factors=[1.0], num_blocks=1)
-    baseline = MultiScaleProjector(**kwargs)
-    enhanced = MultiScaleProjector(**kwargs, mfff_enabled=True)
+class _FakeEncoder(torch.nn.Module):
+    """Supply cheap spatial features without downloading DINOv2 weights."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__()
+        self._out_feature_channels = [32, 32]
+
+    def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
+        """Return two distinct feature maps with encoder-like channels."""
+        feature = x.mean(dim=1, keepdim=True).repeat(1, 32, 1, 1)
+        return [feature, feature * 2]
+
+
+@pytest.mark.parametrize("dual", [pytest.param(False, id="single"), pytest.param(True, id="dual")])
+def test_backbone_mfff_order_and_pretrained_keys(monkeypatch: pytest.MonkeyPatch, dual: bool) -> None:
+    """Apply MFFF to projector outputs in normal and export forwards."""
+    monkeypatch.setattr("rfdetr.models.backbone.backbone.DinoV2", _FakeEncoder)
+    kwargs = dict(name="dinov2_small", out_channels=16, projector_scale=["P4"], dual_projector=dual)
+    baseline = Backbone(**kwargs)
+    enhanced = Backbone(**kwargs, mfff_enabled=True).eval()
     incompatible = enhanced.load_state_dict(baseline.state_dict(), strict=False)
     assert not incompatible.unexpected_keys
     assert incompatible.missing_keys
-    assert all(key.startswith("mfff.") for key in incompatible.missing_keys)
-    inputs = [torch.randn(2, 16, 7, 9) for _ in range(2)]
+    assert all(key.startswith(("mfff.", "cross_attn_mfff.")) for key in incompatible.missing_keys)
+    inputs = torch.randn(2, 3, 7, 9)
     observed = {}
     handles = [
-        enhanced.mfff[0].register_forward_pre_hook(lambda _, args: observed.update(concat=args[0])),
+        enhanced.projector.register_forward_hook(lambda _, args, output: observed.update(projected=output[0])),
+        enhanced.mfff[0].register_forward_pre_hook(lambda _, args: observed.update(mfff_input=args[0])),
         enhanced.mfff[0].register_forward_hook(lambda _, args, output: observed.update(enhanced=output)),
-        enhanced.stages[0][0].register_forward_pre_hook(lambda _, args: observed.update(c2f=args[0])),
     ]
+    if dual:
+        handles.extend([
+            enhanced.cross_attn_projector.register_forward_hook(
+                lambda _, args, output: observed.update(cross_projected=output[0])
+            ),
+            enhanced.cross_attn_mfff[0].register_forward_pre_hook(
+                lambda _, args: observed.update(cross_input=args[0])
+            ),
+            enhanced.cross_attn_mfff[0].register_forward_hook(
+                lambda _, args, output: observed.update(cross_enhanced=output)
+            ),
+        ])
     try:
-        outputs = enhanced(inputs)
+        outputs, cross_outputs = enhanced(NestedTensor(inputs, torch.zeros(2, 7, 9, dtype=torch.bool)))
+        assert observed["projected"] is observed["mfff_input"]
+        assert outputs[0].tensors is observed["enhanced"]
+        assert outputs[0].tensors.shape == (2, 16, 7, 9)
+        if dual:
+            assert observed["cross_projected"] is observed["cross_input"]
+            assert cross_outputs[0].tensors is observed["cross_enhanced"]
+        exported, _, exported_cross = enhanced.forward_export(inputs)
+        assert observed["projected"] is observed["mfff_input"]
+        assert exported[0] is observed["enhanced"]
+        torch.testing.assert_close(exported[0], outputs[0].tensors)
+        if dual:
+            assert observed["cross_projected"] is observed["cross_input"]
+            assert exported_cross[0] is observed["cross_enhanced"]
+            torch.testing.assert_close(exported_cross[0], cross_outputs[0].tensors)
+        else:
+            assert cross_outputs is None and exported_cross is None
     finally:
         for handle in handles:
             handle.remove()
-    torch.testing.assert_close(observed["concat"], torch.cat(inputs, dim=1))
-    assert observed["enhanced"] is observed["c2f"]
-    assert outputs[0].shape == (2, 16, 7, 9)
 
 
 @pytest.mark.parametrize("device", [pytest.param("cpu", id="cpu"), pytest.param("cuda", id="cuda")])
@@ -71,11 +113,12 @@ def test_mfff_autocast_non_power_of_two(device: str) -> None:
     assert x.grad is not None and torch.isfinite(x.grad).all()
 
 
-def test_projector_multiscale_mfff() -> None:
+def test_projector_multiscale_mfff(monkeypatch: pytest.MonkeyPatch) -> None:
     """Each pyramid level preserves the shape expected by the detector."""
-    module = MultiScaleProjector([32, 32], 16, [2.0, 1.0, 0.5], num_blocks=1, mfff_enabled=True)
-    outputs = module([torch.randn(2, 32, 8, 10) for _ in range(2)])
-    assert [tuple(output.shape) for output in outputs] == [(2, 16, 16, 20), (2, 16, 8, 10), (2, 16, 4, 5)]
+    monkeypatch.setattr("rfdetr.models.backbone.backbone.DinoV2", _FakeEncoder)
+    module = Backbone(name="dinov2_small", out_channels=16, projector_scale=["P3", "P4", "P5"], mfff_enabled=True)
+    outputs, _ = module(NestedTensor(torch.randn(2, 3, 8, 10), torch.zeros(2, 8, 10, dtype=torch.bool)))
+    assert [tuple(output.tensors.shape) for output in outputs] == [(2, 16, 16, 20), (2, 16, 8, 10), (2, 16, 4, 5)]
 
 
 def test_mfff_config_namespace_roundtrip() -> None:

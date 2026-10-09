@@ -19,7 +19,7 @@ import torch.nn.functional as F  # noqa: N812
 
 from rfdetr.models.backbone.base import BackboneBase
 from rfdetr.models.backbone.dinov2 import DinoV2
-from rfdetr.models.backbone.projector import MultiScaleProjector
+from rfdetr.models.backbone.projector import MFFF, MultiScaleProjector
 from rfdetr.utilities.logger import get_logger
 from rfdetr.utilities.tensors import NestedTensor
 
@@ -107,7 +107,6 @@ class Backbone(BackboneBase):
             scale_factors=scale_factors,
             layer_norm=layer_norm,
             rms_norm=rms_norm,
-            mfff_enabled=mfff_enabled,
         )
         self.cross_attn_projector = (
             MultiScaleProjector(
@@ -116,7 +115,17 @@ class Backbone(BackboneBase):
                 scale_factors=scale_factors,
                 layer_norm=layer_norm,
                 rms_norm=rms_norm,
-                mfff_enabled=mfff_enabled,
+            )
+            if dual_projector
+            else None
+        )
+
+        self.mfff = torch.nn.ModuleList(
+            MFFF(out_channels) if mfff_enabled else torch.nn.Identity() for _ in scale_factors
+        )
+        self.cross_attn_mfff = (
+            torch.nn.ModuleList(
+                MFFF(out_channels) if mfff_enabled else torch.nn.Identity() for _ in scale_factors
             )
             if dual_projector
             else None
@@ -150,6 +159,7 @@ class Backbone(BackboneBase):
         # (H, W, B, C)
         raw_feats = self.encoder(tensor_list.tensors)
         feats = self.projector(raw_feats)
+        feats = [module(feat) for module, feat in zip(self.mfff, feats, strict=True)]
         # x: [(B, C, H, W)]
         out = []
         for feat in feats:
@@ -162,6 +172,9 @@ class Backbone(BackboneBase):
         if self.cross_attn_projector is not None:
             cross_attn_out = []
             cross_attn_feats = self.cross_attn_projector(raw_feats)
+            cross_attn_feats = [
+                module(feat) for module, feat in zip(self.cross_attn_mfff, cross_attn_feats, strict=True)
+            ]
             for feat in cross_attn_feats:
                 m = tensor_list.mask
                 assert m is not None
@@ -173,6 +186,7 @@ class Backbone(BackboneBase):
     def forward_export(self, tensors: torch.Tensor):
         raw_feats = self.encoder(tensors)
         feats = self.projector(raw_feats)
+        feats = [module(feat) for module, feat in zip(self.mfff, feats, strict=True)]
         out_feats = []
         out_masks = []
         for feat in feats:
@@ -184,6 +198,9 @@ class Backbone(BackboneBase):
         cross_attn_feats = None
         if self.cross_attn_projector is not None:
             cross_attn_feats = list(self.cross_attn_projector(raw_feats))
+            cross_attn_feats = [
+                module(feat) for module, feat in zip(self.cross_attn_mfff, cross_attn_feats, strict=True)
+            ]
 
         return out_feats, out_masks, cross_attn_feats
 
