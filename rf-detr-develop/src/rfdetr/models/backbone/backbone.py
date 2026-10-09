@@ -52,6 +52,7 @@ class Backbone(BackboneBase):
         num_windows: int = 4,
         positional_encoding_size: int = 0,
         dual_projector: bool = False,
+        mfff_enabled: bool = False,
     ):
         super().__init__()
         # an example name here would be "dinov2_base" or "dinov2_registers_windowed_base"
@@ -106,6 +107,7 @@ class Backbone(BackboneBase):
             scale_factors=scale_factors,
             layer_norm=layer_norm,
             rms_norm=rms_norm,
+            mfff_enabled=mfff_enabled,
         )
         self.cross_attn_projector = (
             MultiScaleProjector(
@@ -114,6 +116,7 @@ class Backbone(BackboneBase):
                 scale_factors=scale_factors,
                 layer_norm=layer_norm,
                 rms_norm=rms_norm,
+                mfff_enabled=mfff_enabled,
             )
             if dual_projector
             else None

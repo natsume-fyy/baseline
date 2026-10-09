@@ -11,6 +11,11 @@ RF-DETR is a real-time transformer architecture for object detection and instanc
 **Python:** >=3.10 (3.10, 3.11, 3.12, 3.13)
 **License:** Apache 2.0 (Plus models under PML 1.0)
 
+**Optional frequency enhancement:** `mfff_enabled=True` inserts UAV-DETR MFFF after each projector's
+feature concatenation and before C2f/LayerNorm. Existing pretrained stage keys are preserved; new weights
+live under `projector.mfff.*`. The HazyDet training entry point enables MFFF and disables HBS.
+FFT uses FP32 under AMP; ONNX/TensorRT export compatibility has not been validated.
+
 > [!TIP]
 >
 > - **Configuration:** See `pyproject.toml` for dependencies, build settings, and tool configurations.

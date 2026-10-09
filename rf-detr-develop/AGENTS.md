@@ -207,6 +207,12 @@ uv run twine check --strict dist/*
 
 **Model Architecture:**
 
+- Optional `ModelConfig.mfff_enabled` enables UAV-DETR MFFF in each projector scale:
+  concatenated encoder features -> MFFF -> existing C2f -> LayerNorm. Default is false.
+  `projector.mfff.*` stores new parameters separately so pretrained `stages.*` keys stay compatible.
+  FFT operations use FP32 under AMP; training, inference and backbone export forward share the projector.
+  FFT-based ONNX/TensorRT export is not validated. `train_hazydet.py` enables MFFF and disables HBS.
+
 - RFDETR wrappers: `self.model` is the model context returned by `get_model()`
 - Underlying PyTorch module: `self.model.model`
 - Segmentation models return `pred_masks` as `torch.Tensor` or dict with keys `['spatial_features', 'query_features', 'bias']`

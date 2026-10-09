@@ -159,6 +159,92 @@ class C2f(nn.Module):
         return self.cv2(torch.cat(y, 1))
 
 
+class FFM(nn.Module):
+    """Frequency modulation adapted from UAV-DETR's uav_modules/block.py.
+
+    Source: https://github.com/ValiantDiligent/UAV-DETR/blob/main/ultralytics/nn/uav_modules/block.py
+    The unused upstream convolution is omitted. FFT runs in FP32 under AMP.
+
+    Args:
+        dim: Number of input and output channels.
+    """
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.dwconv1 = nn.Conv2d(dim, dim, 1)
+        self.dwconv2 = nn.Conv2d(dim, dim, 1)
+        self.alpha = nn.Parameter(torch.zeros(dim, 1, 1))
+        self.beta = nn.Parameter(torch.ones(dim, 1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Modulate a spectrum and combine its inverse with the input."""
+        x1, x2 = self.dwconv1(x), self.dwconv2(x)
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            spectrum = torch.fft.fft2(x2.float(), norm="backward")
+            out = torch.fft.ifft2(x1.float() * spectrum, norm="backward").abs()
+        return (out * self.alpha + x.float() * self.beta).to(x.dtype)
+
+
+class ImprovedFFTKernel(nn.Module):
+    """UAV-DETR spatial/frequency kernel with shape-preserving convolutions.
+
+    Args:
+        dim: Number of input and output channels, at least four.
+    """
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.in_conv = nn.Sequential(nn.Conv2d(dim, dim, 1), nn.GELU())
+        self.out_conv = nn.Conv2d(dim, dim, 1)
+        self.dw_33 = nn.Conv2d(dim, dim, 31, padding=15, groups=dim)
+        self.dw_11 = nn.Conv2d(dim, dim, 1, groups=dim)
+        self.act = nn.SiLU()
+        self.conv1x1 = nn.Conv2d(dim, dim, 1)
+        self.conv3x3 = nn.Conv2d(dim, dim, 3, padding=1, groups=dim)
+        self.conv5x5 = nn.Conv2d(dim, dim, 5, padding=2, groups=dim)
+        self.fac_conv = nn.Conv2d(dim, dim, 1)
+        self.fac_pool = nn.AdaptiveAvgPool2d(1)
+        self.ffm = FFM(dim)
+        self.channel_attention = nn.Sequential(
+            nn.Conv2d(dim, dim // 4, 1), nn.ReLU(), nn.Conv2d(dim // 4, dim, 1), nn.Sigmoid()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Combine frequency modulation, channel attention and spatial kernels."""
+        out = self.in_conv(x)
+        x_att = self.fac_conv(self.fac_pool(out))
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            spectrum = torch.fft.fft2(out.float(), norm="backward")
+            x_fca = torch.fft.ifft2(x_att.float() * spectrum, norm="backward").abs()
+        x_fca = x_fca.to(out.dtype)
+        x_sca = self.conv1x1(x_fca) + self.conv3x3(x_fca) + self.conv5x5(x_fca)
+        x_sca = self.ffm(x_sca * self.channel_attention(x_att))
+        return self.out_conv(self.act(x + self.dw_33(out) + self.dw_11(out) + x_sca))
+
+
+class MFFF(nn.Module):
+    """UAV-DETR partial-channel frequency enhancement before projector fusion.
+
+    Args:
+        dim: Number of concatenated feature channels.
+        e: Fraction of channels processed by the frequency kernel.
+    """
+
+    def __init__(self, dim: int, e: float = 0.25) -> None:
+        super().__init__()
+        self.frequency_channels = int(dim * e)
+        if not 0 < e < 1 or not 4 <= self.frequency_channels < dim:
+            raise ValueError("MFFF requires at least four frequency channels and a nonempty bypass branch.")
+        self.cv1 = ConvX(dim, dim, kernel=1, act="silu")
+        self.cv2 = ConvX(dim, dim, kernel=1, act="silu")
+        self.m = ImprovedFFTKernel(self.frequency_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Enhance a channel subset while preserving the feature map shape."""
+        frequency, bypass = self.cv1(x).split((self.frequency_channels, x.shape[1] - self.frequency_channels), dim=1)
+        return self.cv2(torch.cat((self.m(frequency), bypass), dim=1))
+
+
 class MultiScaleProjector(nn.Module):
     """This module implements MultiScaleProjector in :paper:`lwdetr`.
 
@@ -175,6 +261,7 @@ class MultiScaleProjector(nn.Module):
         rms_norm: bool = False,
         survival_prob: float = 1.0,
         force_drop_last_n_features: int = 0,
+        mfff_enabled: bool = False,
     ) -> None:
         """
         Args:
@@ -182,6 +269,7 @@ class MultiScaleProjector(nn.Module):
             out_channels: Number of channels in the output feature maps.
             scale_factors: List of scaling factors to upsample or downsample
                 the input features for creating pyramid features.
+            mfff_enabled: Enhance concatenated features before C2f at each scale.
         """
         super(MultiScaleProjector, self).__init__()
 
@@ -191,6 +279,7 @@ class MultiScaleProjector(nn.Module):
 
         stages_sampling = []
         stages = []
+        frequency_modules = []
         # use_bias = norm == ""
         self.use_extra_pool = False
         for scale in scale_factors:
@@ -245,6 +334,7 @@ class MultiScaleProjector(nn.Module):
             stages_sampling[-1] = nn.ModuleList(stages_sampling[-1])
 
             in_dim = int(sum(in_channel // max(1, scale) for in_channel in in_channels))
+            frequency_modules.append(MFFF(in_dim) if mfff_enabled else nn.Identity())
             layers = [
                 C2f(in_dim, out_channels, num_blocks, layer_norm=layer_norm),
                 get_norm("LN", out_channels),
@@ -254,6 +344,8 @@ class MultiScaleProjector(nn.Module):
 
         self.stages_sampling = nn.ModuleList(stages_sampling)
         self.stages = nn.ModuleList(stages)
+        # Keep existing stages.* keys unchanged when loading pretrained checkpoints.
+        self.mfff = nn.ModuleList(frequency_modules)
 
     def forward(self, x):
         """
@@ -289,7 +381,7 @@ class MultiScaleProjector(nn.Module):
                 feat_fuse = torch.cat(feat_fuse, dim=1)
             else:
                 feat_fuse = feat_fuse[0]
-            results.append(stage(feat_fuse))
+            results.append(stage(self.mfff[i](feat_fuse)))
         if self.use_extra_pool:
             results.append(F.max_pool2d(results[-1], kernel_size=1, stride=2, padding=0))
         return results

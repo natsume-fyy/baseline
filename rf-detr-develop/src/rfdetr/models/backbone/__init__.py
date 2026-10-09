@@ -82,6 +82,7 @@ def build_backbone(
     num_windows,
     positional_encoding_size,
     dual_projector: bool = False,
+    mfff_enabled: bool = False,
 ):
     """
     Useful args:
@@ -113,6 +114,7 @@ def build_backbone(
         num_windows=num_windows,
         positional_encoding_size=positional_encoding_size,
         dual_projector=dual_projector,
+        mfff_enabled=mfff_enabled,
     )
 
     model = Joiner(backbone, position_embedding)

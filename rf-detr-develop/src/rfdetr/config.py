@@ -519,6 +519,7 @@ class ModelConfig(BaseConfig):
     dual_projector: bool = False
     dual_projector_kp_only: bool = False
     hbs_enabled: bool = False
+    mfff_enabled: bool = False
     hbs_reduction: int = Field(default=4, ge=1)
     num_keypoints_per_class: list[int] = Field(default_factory=list)
     num_decoder_registers: int = 0

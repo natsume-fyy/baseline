@@ -63,6 +63,7 @@ class BuilderArgs(Protocol):
     resolution: int
     group_detr: int
     hbs_enabled: bool
+    mfff_enabled: bool
     hbs_reduction: int
     gradient_checkpointing: bool
     positional_encoding_size: int
