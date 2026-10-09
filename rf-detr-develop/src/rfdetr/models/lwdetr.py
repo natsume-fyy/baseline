@@ -43,7 +43,6 @@ from rfdetr.models.criterion import (  # noqa: F401 — backward compat
     sigmoid_varifocal_loss,
 )
 from rfdetr.models.heads.segmentation import SegmentationHead
-from rfdetr.models.gcblock import GCBlock
 from rfdetr.models.hbs import HBS
 from rfdetr.models.matcher import build_matcher
 from rfdetr.models.math import MLP
@@ -136,7 +135,6 @@ class LWDETR(nn.Module):
         hbs_enabled: bool = False,
         hbs_reduction: int = 4,
         hbs_kernel_sizes: list[int] | None = None,
-        gc_enabled: bool = False,
     ):
         """Initializes the model.
 
@@ -165,9 +163,6 @@ class LWDETR(nn.Module):
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.group_detr = group_detr
-        if gc_enabled and (hbs_enabled or segmentation_head is not None or use_grouppose_keypoints):
-            raise ValueError("GC auxiliary branch requires detection mode with HBS disabled.")
-        self.gc = GCBlock(hidden_dim, act=False) if gc_enabled else None
         self.hbs = (
             HBS(
                 channels=hidden_dim,
@@ -483,14 +478,6 @@ class LWDETR(nn.Module):
         features, poss, cross_attn_features = self.backbone(samples)
 
         out = self._forward_from_backbone_features(samples, features, poss, cross_attn_features)
-        if self.training and self.gc is not None and targets is not None:
-            auxiliary_features = self._gc_auxiliary_features(features)
-            auxiliary_cross = None
-            if cross_attn_features is not None:
-                auxiliary_cross = self._gc_auxiliary_features(cross_attn_features)
-            out["gc_outputs"] = self._forward_from_backbone_features(
-                samples, auxiliary_features, poss, auxiliary_cross
-            )
         if self.training and self.hbs is not None and targets is not None:
             hbs_tensors = self.hbs(
                 [feature.tensors for feature in features],
@@ -518,18 +505,6 @@ class LWDETR(nn.Module):
                 hbs_cross_attn_features,
             )
         return out
-
-    def _gc_auxiliary_features(self, features: list[NestedTensor]) -> list[NestedTensor]:
-        """Apply GC only to the auxiliary post-Projector features; retain main inputs."""
-        outputs = []
-        for feature in features:
-            source, mask = feature.decompose()
-            clean = source if mask is None else source.masked_fill(mask[:, None], 0)
-            enhanced = self.gc(clean)
-            if mask is not None:
-                enhanced = torch.where(mask[:, None], source, enhanced)
-            outputs.append(NestedTensor(enhanced, mask))
-        return outputs
 
     def _forward_from_backbone_features(
         self,
@@ -912,7 +887,6 @@ def build_model(args: "BuilderArgs"):
         use_grouppose_keypoints=getattr(args, "use_grouppose_keypoints", False),
         num_keypoints_per_class=getattr(args, "num_keypoints_per_class", []),
         grouppose_keypoint_dim_downscale=getattr(args, "grouppose_keypoint_dim_downscale", 1),
-        gc_enabled=getattr(args, "gc_enabled", False),
         hbs_enabled=getattr(args, "hbs_enabled", False),
         hbs_reduction=getattr(args, "hbs_reduction", 4),
         hbs_kernel_sizes=[
@@ -950,12 +924,6 @@ def build_criterion_and_postprocessors(args: "BuilderArgs"):
     if getattr(args, "hbs_enabled", False):
         hbs_loss_coef = getattr(args, "hbs_loss_coef", 0.25)
         weight_dict.update({f"{key}_hbs": value * hbs_loss_coef for key, value in tuple(weight_dict.items())})
-
-    if getattr(args, "gc_enabled", False):
-        coefficient = getattr(args, "gc_loss_coef", 0.25)
-        if not math.isfinite(coefficient) or coefficient <= 0:
-            raise ValueError("gc_loss_coef must be finite and positive; disable gc_enabled for baseline.")
-        weight_dict.update({f"{key}_gc": value * coefficient for key, value in tuple(weight_dict.items())})
 
     losses = ["labels", "boxes", "cardinality"]
     if args.segmentation_head:

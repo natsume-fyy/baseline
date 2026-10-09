@@ -18,6 +18,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 
+from rfdetr.models.se_layer import SELayer
+
 
 class LayerNorm(nn.Module):
     """A LayerNorm variant, popularized by Transformers, that performs point-wise mean and variance normalization over
@@ -254,10 +256,13 @@ class MultiScaleProjector(nn.Module):
 
         self.stages_sampling = nn.ModuleList(stages_sampling)
         self.stages = nn.ModuleList(stages)
+        # One shape-preserving attention module per output pyramid level.
+        self.se_layers = nn.ModuleList([SELayer(out_channels) for _ in scale_factors])
 
-    def forward(self, x):
+    def forward(self, x, padding_mask: torch.Tensor | None = None):
         """
         Args:
+            padding_mask: Optional image padding mask excluded from SE pooling.
             x: Tensor of shape (N,C,H,W). H, W must be a multiple of ``self.size_divisibility``.
         Returns:
             dict[str->Tensor]:
@@ -292,7 +297,13 @@ class MultiScaleProjector(nn.Module):
             results.append(stage(feat_fuse))
         if self.use_extra_pool:
             results.append(F.max_pool2d(results[-1], kernel_size=1, stride=2, padding=0))
-        return results
+        attended = []
+        for result, attention in zip(results, self.se_layers):
+            mask = None
+            if padding_mask is not None:
+                mask = F.interpolate(padding_mask[:, None].float(), size=result.shape[-2:], mode="nearest")[:, 0].bool()
+            attended.append(attention(result, mask))
+        return attended
 
 
 class SimpleProjector(nn.Module):

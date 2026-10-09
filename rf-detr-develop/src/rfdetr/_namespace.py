@@ -31,7 +31,6 @@ _MC_NAMESPACE_FIELDS = {
     "freeze_encoder",
     "gradient_checkpointing",
     "group_detr",
-    "gc_enabled",
     "hbs_enabled",
     "hbs_reduction",
     "hidden_dim",
